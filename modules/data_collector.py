@@ -434,6 +434,7 @@ class DividendDataCollector:
     def get_chrome_driver(self):
         """
         Initialize Chrome WebDriver in headless mode
+        Optimized for Streamlit Cloud deployment
 
         Returns:
             WebDriver instance
@@ -441,11 +442,34 @@ class DividendDataCollector:
         options = webdriver.ChromeOptions()
 
         # Always run in headless mode (user requirement)
-        options.add_argument('--headless')
+        options.add_argument('--headless=new')
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
+        options.add_argument('--disable-setuid-sandbox')
+        options.add_argument('--single-process')
+        options.add_argument('--disable-software-rasterizer')
+        options.add_argument('--disable-extensions')
 
+        # User agent to avoid blocking
+        options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36')
+
+        # Try to use system chromium-driver first (Streamlit Cloud)
+        try:
+            # On Streamlit Cloud, chromium-driver is installed via packages.txt
+            import shutil
+            chromium_driver_path = shutil.which('chromedriver')
+
+            if chromium_driver_path:
+                print(f"Using system chromedriver: {chromium_driver_path}")
+                service = Service(chromium_driver_path)
+                driver = webdriver.Chrome(service=service, options=options)
+                return driver
+        except Exception as e:
+            print(f"Could not use system chromedriver: {e}")
+
+        # Fallback to webdriver-manager (local development)
+        print("Using webdriver-manager to install chromedriver")
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=options)
         return driver
