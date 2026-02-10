@@ -608,7 +608,7 @@ else:
 
         with col2:
             st.markdown("**Dividend Aristocrats (25+ years)**")
-            aristocrats = df[df['Years'] >= 25].nlargest(5, 'Years')[['Symbol', 'Company Name', 'Years']].head(5)
+            aristocrats = df[df['Div. Gr. Years'] >= 25].nlargest(5, 'Div. Gr. Years')[['Symbol', 'Company Name', 'Div. Gr. Years']].head(5)
             if not aristocrats.empty:
                 st.dataframe(aristocrats, hide_index=True, width='stretch')
             else:

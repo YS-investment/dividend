@@ -5,7 +5,12 @@ Handles web scraping and data processing
 
 import pandas as pd
 import os
+import sys
 import time
+
+# Allow running as standalone script from any directory
+if __name__ == "__main__":
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 import shutil
 import warnings
 from typing import Optional, Callable
@@ -198,8 +203,8 @@ class DividendDataCollector:
                 (regular_stocks['Payout Ratio'] <= AppConfig.DEFAULT_PAYOUT_MAX)
             ]
 
-        if 'Years' in regular_stocks.columns:
-            regular_stocks = regular_stocks[regular_stocks['Years'] >= AppConfig.DEFAULT_MIN_YEARS]
+        if 'Div. Gr. Years' in regular_stocks.columns:
+            regular_stocks = regular_stocks[regular_stocks['Div. Gr. Years'] >= AppConfig.DEFAULT_MIN_YEARS]
 
         if 'Div. Growth' in regular_stocks.columns:
             regular_stocks = regular_stocks[regular_stocks['Div. Growth'] >= AppConfig.DEFAULT_MIN_GROWTH]
@@ -407,8 +412,10 @@ class DividendDataCollector:
         result = df.copy()
 
         # Convert Years column
-        if 'Years' in result.columns:
-            result['Years'] = pd.to_numeric(result['Years'], errors='coerce')
+        if 'Div. Gr. Years' in result.columns:
+            result['Div. Gr. Years'] = pd.to_numeric(result['Div. Gr. Years'], errors='coerce')
+        if 'Div. Years' in result.columns:
+            result['Div. Years'] = pd.to_numeric(result['Div. Years'], errors='coerce')
 
         return result
 
@@ -447,7 +454,7 @@ class DividendDataCollector:
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
         options.add_argument('--disable-setuid-sandbox')
-        options.add_argument('--single-process')
+        # options.add_argument('--single-process')
         options.add_argument('--disable-software-rasterizer')
         options.add_argument('--disable-extensions')
 
@@ -484,17 +491,34 @@ class DividendDataCollector:
         Returns:
             DataFrame with scraped dividend stock data
         """
+        import sys
+        from selenium.webdriver.support.ui import WebDriverWait
+        from selenium.webdriver.support import expected_conditions as EC
+
         print("Initializing web scraper...")
+        sys.stdout.flush()
         driver = self.get_chrome_driver()
 
         try:
             # Navigate to StockAnalysis.com screener
             print(f"Accessing {AppConfig.STOCKANALYSIS_URL}")
+            sys.stdout.flush()
             driver.get(AppConfig.STOCKANALYSIS_URL)
-            time.sleep(AppConfig.PAGE_LOAD_WAIT)
+
+            # Wait for page to fully load (wait for table to appear)
+            try:
+                WebDriverWait(driver, 15).until(
+                    EC.presence_of_element_located((By.ID, "main-table"))
+                )
+                print("  ✓ Page loaded successfully")
+            except Exception as e:
+                print(f"  ⚠ Page load wait timeout, continuing anyway: {e}")
+                time.sleep(3)
+            sys.stdout.flush()
 
             # Configure UI - click through XPaths to set up table
             print("Configuring screener UI...")
+            sys.stdout.flush()
             for i, xpath in enumerate(AppConfig.SCRAPER_XPATHS):
                 # Try to close popup before each action
                 try:
@@ -512,21 +536,65 @@ class DividendDataCollector:
                     print(f"  ✓ Clicked element {i+1}/{len(AppConfig.SCRAPER_XPATHS)}")
                 except Exception as e:
                     print(f"  ⚠ Warning: Could not click element {i+1}: {e}")
+                sys.stdout.flush()
+
+            # Wait for table to reload after config changes
+            print("Waiting for table to reload after configuration...")
+            sys.stdout.flush()
+            try:
+                WebDriverWait(driver, 10).until(
+                    EC.presence_of_element_located((By.ID, "main-table"))
+                )
+                # Extra wait for table data to fully render
+                time.sleep(2)
+                print("  ✓ Table ready")
+            except Exception as e:
+                print(f"  ⚠ Table wait timeout: {e}")
+                time.sleep(3)
+            sys.stdout.flush()
 
             # Scrape all pages
             print(f"\nScraping {AppConfig.MAX_SCRAPE_PAGES} pages...")
+            sys.stdout.flush()
             df_list = []
+            consecutive_errors = 0
+            MAX_CONSECUTIVE_ERRORS = 3
 
             for page_num in tqdm(range(AppConfig.MAX_SCRAPE_PAGES), desc="Scraping pages"):
-                # Try to close popup
                 try:
-                    popup = driver.find_element(By.XPATH, AppConfig.POPUP_XPATH)
-                    popup.click()
-                except:
-                    pass
+                    # Try to close popup
+                    try:
+                        popup = driver.find_element(By.XPATH, AppConfig.POPUP_XPATH)
+                        popup.click()
+                        time.sleep(0.3)
+                    except:
+                        pass
 
-                # Extract table HTML
-                try:
+                    # Wait for table to be present
+                    try:
+                        WebDriverWait(driver, 10).until(
+                            EC.presence_of_element_located((By.ID, "main-table"))
+                        )
+                    except Exception as e:
+                        print(f"\n⚠ Table not found on page {page_num + 1}, retrying... ({e})")
+                        sys.stdout.flush()
+                        time.sleep(2)
+                        # Retry once
+                        try:
+                            WebDriverWait(driver, 10).until(
+                                EC.presence_of_element_located((By.ID, "main-table"))
+                            )
+                        except:
+                            print(f"\n✗ Table still not found on page {page_num + 1}, skipping")
+                            sys.stdout.flush()
+                            consecutive_errors += 1
+                            if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                                print(f"\n✗ {MAX_CONSECUTIVE_ERRORS} consecutive errors, stopping scrape")
+                                sys.stdout.flush()
+                                break
+                            continue
+
+                    # Extract table HTML
                     table_html = driver.find_element(By.ID, "main-table").get_attribute('outerHTML')
 
                     # Parse with BeautifulSoup
@@ -544,35 +612,58 @@ class DividendDataCollector:
                     if rows and headers:
                         page_df = pd.DataFrame(rows, columns=headers)
                         df_list.append(page_df)
+                        consecutive_errors = 0  # Reset on success
 
                     # Update progress
                     if progress_callback:
                         progress_callback(page_num + 1, AppConfig.MAX_SCRAPE_PAGES)
 
-                except Exception as e:
-                    print(f"\n⚠ Error scraping page {page_num + 1}: {e}")
+                    # Navigate to next page
+                    if page_num < AppConfig.MAX_SCRAPE_PAGES - 1:
+                        try:
+                            next_button = driver.find_element(By.XPATH, AppConfig.NEXT_BUTTON_XPATH)
+                            next_button.click()
+                            time.sleep(AppConfig.PAGE_LOAD_WAIT)
+                        except Exception as e:
+                            print(f"\n⚠ Could not navigate to next page: {e}")
+                            sys.stdout.flush()
+                            break
 
-                # Navigate to next page
-                if page_num < AppConfig.MAX_SCRAPE_PAGES - 1:
-                    try:
-                        next_button = driver.find_element(By.XPATH, AppConfig.NEXT_BUTTON_XPATH)
-                        next_button.click()
-                        time.sleep(AppConfig.PAGE_LOAD_WAIT)
-                    except Exception as e:
-                        print(f"\n⚠ Could not navigate to next page: {e}")
+                except KeyboardInterrupt:
+                    print(f"\n✗ Scraping interrupted by user at page {page_num + 1}")
+                    sys.stdout.flush()
+                    break
+                except Exception as e:
+                    print(f"\n⚠ Error scraping page {page_num + 1}: {type(e).__name__}: {e}")
+                    sys.stdout.flush()
+                    consecutive_errors += 1
+                    if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                        print(f"\n✗ {MAX_CONSECUTIVE_ERRORS} consecutive errors, stopping scrape")
+                        sys.stdout.flush()
                         break
 
             # Concatenate all DataFrames
             if df_list:
                 final_df = pd.concat(df_list, ignore_index=True)
-                print(f"\n✓ Successfully scraped {len(final_df)} stocks")
+                print(f"\n✓ Successfully scraped {len(final_df)} stocks from {len(df_list)} pages")
+                sys.stdout.flush()
                 return final_df
             else:
-                raise ValueError("No data was scraped")
+                raise ValueError("No data was scraped - table element may have changed or page failed to load")
+
+        except BaseException as e:
+            # Catch BaseException to log even Streamlit StopException or SystemExit
+            print(f"\n✗ Scraper terminated: {type(e).__name__}: {e}")
+            sys.stdout.flush()
+            raise
 
         finally:
-            driver.quit()
+            try:
+                driver.quit()
+            except:
+                pass
             print("WebDriver closed")
+            sys.stdout.flush()
 
     def backup_existing_data(self):
         """
@@ -615,8 +706,8 @@ class DividendDataCollector:
         required_columns = [
             'Symbol', 'Company Name', 'Market Cap',
             'Div. ($)', 'Div. Yield', 'Payout Ratio',
-            'Div. Growth', 'Payout Freq.', 'Years',
-            'Div. Growth 3Y', 'Div. Growth 5Y'
+            'Div. Growth', 'Payout Freq.', 'Div. Gr. Years',
+            'Div. Years', 'Div. Growth 3Y', 'Div. Growth 5Y'
         ]
 
         # 1. Check DataFrame not empty
@@ -832,3 +923,36 @@ class DividendDataCollector:
 
         print(f"✓ Applied yield comparison filter: {len(result)} stocks remaining")
         return result
+
+
+if __name__ == "__main__":
+
+    print("=" * 60)
+    print("Standalone Data Collector - Crawl Only")
+    print("=" * 60)
+
+    collector = DividendDataCollector()
+
+    try:
+        df = collector.collect_stockanalysis_data()
+
+        output_path = os.path.join(
+            os.path.dirname(__file__), '..', 'data', 'dividend_from_stockanalysis_solo.csv'
+        )
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        df.to_csv(output_path, index=False)
+
+        print(f"\n{'=' * 60}")
+        print(f"Results saved to: {output_path}")
+        print(f"  Rows: {len(df)}")
+        print(f"  Columns: {list(df.columns)}")
+        if len(df) > 0:
+            print(f"  Sample (first 3 rows):")
+            print(df.head(3).to_string(index=False))
+        print("=" * 60)
+
+    except Exception as e:
+        print(f"\n✗ Crawling failed: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)

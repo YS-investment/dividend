@@ -57,12 +57,21 @@ payout_range = st.sidebar.slider(
 )
 
 min_years = st.sidebar.slider(
-    "Minimum Dividend Years",
+    "Minimum Dividend Growth Years",
     min_value=0,
     max_value=70,
     value=5,
     step=1,
-    help="Consecutive years of dividend payments"
+    help="Consecutive years of dividend increase"
+)
+
+min_div_years = st.sidebar.slider(
+    "Minimum Dividend Payment Years",
+    min_value=0,
+    max_value=70,
+    value=5,
+    step=1,
+    help="Consecutive years of dividend payments (without decrease)"
 )
 
 min_growth = st.sidebar.slider(
@@ -116,7 +125,8 @@ col1, col2, col3, col4, col5 = st.columns(5)
 with col1:
     w_yield = st.number_input("Dividend Yield", min_value=0.0, max_value=1.0, value=0.5, step=0.05)
 with col2:
-    w_years = st.number_input("Years", min_value=0.0, max_value=1.0, value=0.2, step=0.05)
+    w_years = st.number_input("Growth Years", min_value=0.0, max_value=1.0, value=0.1, step=0.05)
+    w_div_years = st.number_input("Payment Years", min_value=0.0, max_value=1.0, value=0.1, step=0.05)
 with col3:
     w_cagr = st.number_input("5Y CAGR", min_value=0.0, max_value=1.0, value=0.1, step=0.05)
 with col4:
@@ -125,7 +135,7 @@ with col5:
     w_payout = st.number_input("Payout Ratio", min_value=0.0, max_value=1.0, value=0.1, step=0.05)
 
 # Validate weights
-total_weight = w_yield + w_years + w_cagr + w_growth + w_payout
+total_weight = w_yield + w_years + w_div_years + w_cagr + w_growth + w_payout
 if abs(total_weight - 1.0) > 0.01:
     st.warning(f"⚠️ Weights sum to {total_weight:.2f}. Please adjust to 1.0")
     st.stop()
@@ -138,7 +148,9 @@ filtered_df = filter_stocks(
     min_yield=min_yield / 100,
     payout_min=payout_range[0] / 100,
     payout_max=payout_range[1] / 100,
+
     min_years=min_years,
+    min_div_years=min_div_years,
     min_growth=min_growth / 100,
     min_growth_5y=min_growth_5y / 100,
     sectors=selected_sectors if selected_sectors else None,
@@ -152,6 +164,7 @@ if len(filtered_df) > 0:
     weights = {
         'yield': w_yield,
         'years': w_years,
+        'div_years': w_div_years,
         'cagr': w_cagr,
         'growth': w_growth,
         'payout': w_payout
@@ -175,7 +188,7 @@ if len(filtered_df) > 0:
 
     # Column selector
     all_columns = filtered_df.columns.tolist()
-    default_columns = ['Symbol', 'Company Name', 'Category', 'Sector', 'Market Cap', 'mkt_cap_tier', 'Div. Yield', 'Payout Ratio', 'Years', 'Div. Growth 5Y', 'high_div_composite']
+    default_columns = ['Symbol', 'Company Name', 'Category', 'Sector', 'Market Cap', 'mkt_cap_tier', 'Div. Yield', 'Payout Ratio', 'Div. Gr. Years', 'Div. Years', 'Div. Growth 5Y', 'high_div_composite']
     available_default = [col for col in default_columns if col in all_columns]
 
     display_columns = st.multiselect(
@@ -219,11 +232,11 @@ if len(filtered_df) > 0:
     st.subheader("📊 Visualizations")
 
     # Scatter plot - moved to top
-    if 'Div. Yield' in filtered_df.columns and 'Years' in filtered_df.columns:
+    if 'Div. Yield' in filtered_df.columns and 'Div. Gr. Years' in filtered_df.columns:
         st.subheader("Dividend Yield vs Years (bubble size = score)")
         fig3 = create_scatter_plot(
             filtered_df.head(50),
-            x_col='Years',
+            x_col='Div. Gr. Years',
             y_col='Div. Yield',
             size_col='high_div_composite',
             title="Dividend Yield vs Dividend Years",

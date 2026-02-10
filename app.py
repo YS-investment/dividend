@@ -238,9 +238,13 @@ column_config = {
         format="%.2f%%",
         help="5-year dividend growth rate (CAGR) - Compound annual growth rate of dividends over the past 5 years"
     ),
-    "Years": st.column_config.NumberColumn(
-        "Years",
-        help="Number of consecutive years the company has paid dividends without interruption"
+    "Div. Gr. Years": st.column_config.NumberColumn(
+        "Div. Gr. Years",
+        help="Number of consecutive years the company has increased dividends"
+    ),
+    "Div. Years": st.column_config.NumberColumn(
+        "Div. Years",
+        help="Number of consecutive years the company has paid dividends"
     ),
     "Payout Ratio": st.column_config.NumberColumn(
         "Payout Ratio",
@@ -323,7 +327,7 @@ if 'Market Cap' in display_df.columns:
 
 # Select columns to display
 display_columns = ['Symbol', 'Company Name', 'Category', 'Div. Yield', 'Div. Growth 5Y',
-                   'Years', 'Payout Ratio', 'Market Cap', 'Sector', 'Industry',
+                   'Div. Gr. Years', 'Div. Years', 'Payout Ratio', 'Market Cap', 'Sector', 'Industry',
                    'Five_y_DividendYield_diff', 'Ten_y_DividendYield_diff']
 
 # Filter to only existing columns

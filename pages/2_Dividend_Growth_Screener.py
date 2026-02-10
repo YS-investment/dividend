@@ -55,11 +55,21 @@ payout_range = st.sidebar.slider(
 )
 
 min_years = st.sidebar.slider(
-    "Minimum Dividend Years",
+    "Minimum Dividend Growth Years",
     min_value=0,
     max_value=70,
     value=5,
-    step=1
+    step=1,
+    help="Consecutive years of dividend increase"
+)
+
+min_div_years = st.sidebar.slider(
+    "Minimum Dividend Payment Years",
+    min_value=0,
+    max_value=70,
+    value=5,
+    step=1,
+    help="Consecutive years of dividend payments (without decrease)"
 )
 
 min_growth = st.sidebar.slider(
@@ -114,12 +124,13 @@ with col2:
 with col3:
     w_growth = st.number_input("1Y Growth", min_value=0.0, max_value=1.0, value=0.20, step=0.05)
 with col4:
-    w_years = st.number_input("Years", min_value=0.0, max_value=1.0, value=0.10, step=0.05)
+    w_years = st.number_input("Growth Years", min_value=0.0, max_value=1.0, value=0.05, step=0.05)
+    w_div_years = st.number_input("Payment Years", min_value=0.0, max_value=1.0, value=0.05, step=0.05)
 with col5:
     w_payout = st.number_input("Payout Ratio", min_value=0.0, max_value=1.0, value=0.10, step=0.05)
 
 # Validate weights
-total_weight = w_yield + w_years + w_cagr + w_growth + w_payout
+total_weight = w_yield + w_years + w_div_years + w_cagr + w_growth + w_payout
 if abs(total_weight - 1.0) > 0.01:
     st.warning(f"⚠️ Weights sum to {total_weight:.2f}. Please adjust to 1.0")
     st.stop()
@@ -133,6 +144,7 @@ filtered_df = filter_stocks(
     payout_min=payout_range[0] / 100,
     payout_max=payout_range[1] / 100,
     min_years=min_years,
+    min_div_years=min_div_years,
     min_growth=min_growth / 100,
     min_growth_5y=min_growth_5y / 100,
     sectors=selected_sectors if selected_sectors else None,
@@ -146,6 +158,7 @@ if len(filtered_df) > 0:
     weights = {
         'yield': w_yield,
         'years': w_years,
+        'div_years': w_div_years,
         'cagr': w_cagr,
         'growth': w_growth,
         'payout': w_payout
@@ -169,7 +182,7 @@ if len(filtered_df) > 0:
 
     # Column selector
     all_columns = filtered_df.columns.tolist()
-    default_columns = ['Symbol', 'Company Name', 'Category', 'Sector', 'Market Cap', 'mkt_cap_tier', 'Div. Growth 5Y', 'Div. Growth', 'Div. Yield', 'Years', 'dividend_growth_composite']
+    default_columns = ['Symbol', 'Company Name', 'Category', 'Sector', 'Market Cap', 'mkt_cap_tier', 'Div. Growth 5Y', 'Div. Growth', 'Div. Yield', 'Div. Gr. Years', 'Div. Years', 'dividend_growth_composite']
     available_default = [col for col in default_columns if col in all_columns]
 
     display_columns = st.multiselect(
@@ -223,7 +236,7 @@ if len(filtered_df) > 0:
             y_col='Div. Yield',
             size_col='dividend_growth_composite',
             title="Dividend Yield vs 5-Year Growth Rate",
-            hover_data=['Company Name', 'Years']
+            hover_data=['Company Name', 'Div. Gr. Years']
         )
         st.plotly_chart(fig3, width='stretch')
 

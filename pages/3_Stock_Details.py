@@ -61,7 +61,7 @@ with col1:
 
 with col2:
     st.metric("Payout Ratio", f"{stock_data.get('Payout Ratio', 0) * 100:.1f}%")
-    st.metric("Dividend Years", f"{int(stock_data.get('Years', 0))}")
+    st.metric("Dividend Years", f"{int(stock_data.get('Div. Gr. Years', 0))}")
 
 with col3:
     st.metric("1Y Growth", f"{stock_data.get('Div. Growth', 0) * 100:.2f}%")

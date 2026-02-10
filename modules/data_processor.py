@@ -35,6 +35,7 @@ def filter_stocks(
     payout_min: float = AppConfig.DEFAULT_PAYOUT_MIN,
     payout_max: float = AppConfig.DEFAULT_PAYOUT_MAX,
     min_years: int = AppConfig.DEFAULT_MIN_YEARS,
+    min_div_years: int = AppConfig.DEFAULT_MIN_DIV_YEARS,
     min_growth: float = AppConfig.DEFAULT_MIN_GROWTH,
     min_growth_5y: float = AppConfig.DEFAULT_MIN_GROWTH_5Y,
     sectors: list = None,
@@ -49,7 +50,8 @@ def filter_stocks(
         min_yield: Minimum dividend yield (default: 3.5%)
         payout_min: Minimum payout ratio (default: 20%)
         payout_max: Maximum payout ratio (default: 80%)
-        min_years: Minimum consecutive dividend years (default: 5)
+        min_years: Minimum consecutive dividend growth years (default: 5)
+        min_div_years: Minimum consecutive dividend payment years (default: 5)
         min_growth: Minimum 1-year dividend growth (default: 4%)
         min_growth_5y: Minimum 5-year dividend growth (default: 4%)
         sectors: List of sectors to include (default: None = all)
@@ -69,8 +71,11 @@ def filter_stocks(
             (filtered['Payout Ratio'] <= payout_max)
         ]
 
-    if 'Years' in filtered.columns:
-        filtered = filtered[filtered['Years'] >= min_years]
+    if 'Div. Gr. Years' in filtered.columns:
+        filtered = filtered[filtered['Div. Gr. Years'] >= min_years]
+
+    if 'Div. Years' in filtered.columns:
+        filtered = filtered[filtered['Div. Years'] >= min_div_years]
 
     if 'Div. Growth' in filtered.columns:
         filtered = filtered[filtered['Div. Growth'] >= min_growth]
@@ -111,8 +116,11 @@ def calculate_normalized_metrics(df: pd.DataFrame) -> pd.DataFrame:
     if 'Div. Yield' in result.columns:
         result['norm_yield'] = normalize(result['Div. Yield'])
 
-    if 'Years' in result.columns:
-        result['norm_years'] = normalize(result['Years'])
+    if 'Div. Gr. Years' in result.columns:
+        result['norm_years'] = normalize(result['Div. Gr. Years'])
+
+    if 'Div. Years' in result.columns:
+        result['norm_div_years'] = normalize(result['Div. Years'])
 
     # Inverted normalization for Payout Ratio (lower is better)
     if 'Payout Ratio' in result.columns:
@@ -161,6 +169,7 @@ def calculate_composite_score(
     result[score_column] = (
         weights.get('yield', 0) * result.get('norm_yield', 0) +
         weights.get('years', 0) * result.get('norm_years', 0) +
+        weights.get('div_years', 0) * result.get('norm_div_years', 0) +
         weights.get('cagr', 0) * result.get('norm_cagr', 0) +
         weights.get('growth', 0) * result.get('norm_div_growth', 0) +
         weights.get('payout', 0) * result.get('norm_payout', 0)

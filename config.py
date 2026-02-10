@@ -30,9 +30,10 @@ class AppConfig:
     SCRAPER_XPATHS = [
         "//button[contains(text(), 'Dividends')]",  # Click Dividends filter
         '//*[@id="main"]/div[3]/div[1]/div/div[3]/button',  # Open Indicators
-        '//*[@id="main"]/div[3]/div[1]/div/div[3]/div/div[2]/div[16]/input',  # Add Last Div.
-        '//*[@id="main"]/div[3]/div[1]/div/div[3]/div/div[2]/div[17]/input',  # Add Years
-        '//*[@id="main"]/div[3]/div[1]/div/div[3]/div/div[2]/div[18]/input',  # Add CAGR 5Y
+        '//*[@id="main"]/div[3]/div[1]/div/div[3]/div/div[2]/div[16]/input',  # Add Dividend Growth Years
+        '//*[@id="main"]/div[3]/div[1]/div/div[3]/div/div[2]/div[17]/input',  # Add Dividend Payment Years
+        '//*[@id="main"]/div[3]/div[1]/div/div[3]/div/div[2]/div[18]/input',  # Add Dividend Growth (3Y)
+        '//*[@id="main"]/div[3]/div[1]/div/div[3]/div/div[2]/div[19]/input',  # Add Dividend Growth (5Y)
         '//*[@id="main"]/div[3]/div[1]/div/div[3]/button',  # Close Indicators
         '//*[@id="main"]/div[3]/nav[2]/div/div/button',  # Open rows dropdown
         '//*[@id="main"]/div[3]/nav[2]/div/div/div/button[2]',  # Select 50 rows
@@ -50,13 +51,15 @@ class AppConfig:
     DEFAULT_PAYOUT_MIN = 0.20
     DEFAULT_PAYOUT_MAX = 0.80
     DEFAULT_MIN_YEARS = 5
+    DEFAULT_MIN_DIV_YEARS = 5
     DEFAULT_MIN_GROWTH = 0.01
     DEFAULT_MIN_GROWTH_5Y = 0.01
 
     # Scoring weights (High Dividend)
     HIGH_DIV_WEIGHTS = {
         'yield': 0.5,
-        'years': 0.2,
+        'years': 0.1,
+        'div_years': 0.1,
         'cagr': 0.1,
         'growth': 0.1,
         'payout': 0.1
@@ -67,7 +70,8 @@ class AppConfig:
         'cagr': 0.35,
         'growth': 0.2,
         'yield': 0.25,
-        'years': 0.1,
+        'years': 0.05,
+        'div_years': 0.05,
         'payout': 0.1
     }
 
