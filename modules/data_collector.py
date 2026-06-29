@@ -505,6 +505,11 @@ class DividendDataCollector:
         # User agent to avoid blocking
         options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36')
 
+        # Point to system Chromium binary if available (Streamlit Cloud)
+        chromium_bin = shutil.which('chromium') or shutil.which('chromium-browser')
+        if chromium_bin:
+            options.binary_location = chromium_bin
+
         # Try to use system chromium-driver first (Streamlit Cloud)
         try:
             # On Streamlit Cloud, chromium-driver is installed via packages.txt
