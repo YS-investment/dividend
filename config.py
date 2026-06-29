@@ -27,16 +27,25 @@ class AppConfig:
     POPUP_XPATH = '/html/body/div/div[2]/div/button'
     NEXT_BUTTON_XPATH = '//*[@id="main"]/div[3]/nav[2]/button[2]'
 
+    # Screener UI setup XPaths (non-indicator steps)
     SCRAPER_XPATHS = [
         "//button[contains(text(), 'Dividends')]",  # Click Dividends filter
-        '//*[@id="main"]/div[3]/div[1]/div/div[3]/button',  # Open Indicators
-        '//*[@id="main"]/div[3]/div[1]/div/div[3]/div/div[2]/div[16]/input',  # Add Dividend Growth Years
-        '//*[@id="main"]/div[3]/div[1]/div/div[3]/div/div[2]/div[17]/input',  # Add Dividend Payment Years
-        '//*[@id="main"]/div[3]/div[1]/div/div[3]/div/div[2]/div[18]/input',  # Add Dividend Growth (3Y)
-        '//*[@id="main"]/div[3]/div[1]/div/div[3]/div/div[2]/div[19]/input',  # Add Dividend Growth (5Y)
-        '//*[@id="main"]/div[3]/div[1]/div/div[3]/button',  # Close Indicators
         '//*[@id="main"]/div[3]/nav[2]/div/div/button',  # Open rows dropdown
         '//*[@id="main"]/div[3]/nav[2]/div/div/div/button[2]',  # Select 50 rows
+    ]
+
+    # Indicator panel toggle button (open and close, same element)
+    INDICATORS_TOGGLE_XPATH = '//*[@id="main"]/div[3]/div[1]/div/div[3]/button'
+
+    # Indicator panel checkbox container
+    INDICATOR_PANEL_XPATH = '//*[@id="main"]/div[3]/div[1]/div/div[3]/div/div[2]'
+
+    # Label text to search for inside the indicator panel (site display strings)
+    INDICATOR_LABELS = [
+        'Dividend Growth Years',   # → Div. Gr. Years
+        'Dividend Payment Years',  # → Div. Years
+        'Dividend Growth (3Y)',    # → Div. Growth 3Y
+        'Dividend Growth (5Y)',    # → Div. Growth 5Y
     ]
 
     # Data validation thresholds

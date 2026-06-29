@@ -438,6 +438,50 @@ class DividendDataCollector:
 
         return result
 
+    def _try_click(self, driver, xpath: str, label: str = ""):
+        """Click an element by XPath, closing any popup first. Logs result."""
+        try:
+            popup = driver.find_element(By.XPATH, AppConfig.POPUP_XPATH)
+            popup.click()
+            time.sleep(0.5)
+        except:
+            pass
+        try:
+            driver.find_element(By.XPATH, xpath).click()
+            time.sleep(AppConfig.PAGE_LOAD_WAIT)
+            print(f"  ✓ {label}")
+        except Exception as e:
+            print(f"  ⚠ Could not click '{label}': {e}")
+
+    def _select_indicator_columns(self, driver):
+        """Select indicator checkboxes by label text rather than positional XPath."""
+        try:
+            panel = driver.find_element(By.XPATH, AppConfig.INDICATOR_PANEL_XPATH)
+        except Exception as e:
+            print(f"  ⚠ Indicator panel not found: {e}")
+            return
+
+        divs = panel.find_elements(By.XPATH, './div')
+        targets = set(AppConfig.INDICATOR_LABELS)
+        found = set()
+
+        for div in divs:
+            label = div.text.strip()
+            if label in targets:
+                try:
+                    checkbox = div.find_element(By.TAG_NAME, 'input')
+                    if not checkbox.is_selected():
+                        checkbox.click()
+                        time.sleep(0.3)
+                    found.add(label)
+                    print(f"  ✓ Indicator selected: {label}")
+                except Exception as e:
+                    print(f"  ⚠ Could not select indicator '{label}': {e}")
+
+        missing = targets - found
+        if missing:
+            print(f"  ⚠ Indicator labels not found in panel: {missing}")
+
     def get_chrome_driver(self):
         """
         Initialize Chrome WebDriver in headless mode
@@ -516,27 +560,21 @@ class DividendDataCollector:
                 time.sleep(3)
             sys.stdout.flush()
 
-            # Configure UI - click through XPaths to set up table
+            # Configure UI: Step 1 - Click Dividends preset
             print("Configuring screener UI...")
             sys.stdout.flush()
-            for i, xpath in enumerate(AppConfig.SCRAPER_XPATHS):
-                # Try to close popup before each action
-                try:
-                    popup = driver.find_element(By.XPATH, AppConfig.POPUP_XPATH)
-                    popup.click()
-                    time.sleep(0.5)
-                except:
-                    pass  # Popup not present
+            self._try_click(driver, AppConfig.SCRAPER_XPATHS[0], "Dividends preset")
 
-                # Click the element
-                try:
-                    element = driver.find_element(By.XPATH, xpath)
-                    element.click()
-                    time.sleep(AppConfig.PAGE_LOAD_WAIT)
-                    print(f"  ✓ Clicked element {i+1}/{len(AppConfig.SCRAPER_XPATHS)}")
-                except Exception as e:
-                    print(f"  ⚠ Warning: Could not click element {i+1}: {e}")
-                sys.stdout.flush()
+            # Step 2 - Open indicator panel, select columns by label, close panel
+            self._try_click(driver, AppConfig.INDICATORS_TOGGLE_XPATH, "Open Indicators panel")
+            time.sleep(1)
+            self._select_indicator_columns(driver)
+            self._try_click(driver, AppConfig.INDICATORS_TOGGLE_XPATH, "Close Indicators panel")
+
+            # Step 3 - Set 50 rows per page
+            self._try_click(driver, AppConfig.SCRAPER_XPATHS[1], "Open rows dropdown")
+            self._try_click(driver, AppConfig.SCRAPER_XPATHS[2], "Select 50 rows")
+            sys.stdout.flush()
 
             # Wait for table to reload after config changes
             print("Waiting for table to reload after configuration...")
@@ -837,9 +875,21 @@ class DividendDataCollector:
 
                     if not hist_df.empty:
                         # Forward-fill dividends and calculate yield
-                        warnings.filterwarnings("ignore", category=FutureWarning)
-                        hist_df['Dividends'] = hist_df['Dividends'].replace(0, method='ffill')
-                        hist_df['Annual_Dividends'] = hist_df['Dividends'] * 4  # Quarterly assumption
+                        hist_df['Dividends'] = hist_df['Dividends'].replace(0, float('nan')).ffill()
+
+                        # Annualization multiplier based on payout frequency
+                        payout_freq = result.loc[result['Symbol'] == ticker_symbol, 'Payout Freq.'].values
+                        freq_str = payout_freq[0].strip().lower() if len(payout_freq) > 0 and payout_freq[0] else 'quarterly'
+                        if 'monthly' in freq_str:
+                            annual_multiplier = 12
+                        elif 'semi' in freq_str or 'bi-annual' in freq_str or 'biannual' in freq_str:
+                            annual_multiplier = 2
+                        elif 'annual' in freq_str and 'semi' not in freq_str and 'bi' not in freq_str:
+                            annual_multiplier = 1
+                        else:  # quarterly (default)
+                            annual_multiplier = 4
+
+                        hist_df['Annual_Dividends'] = hist_df['Dividends'] * annual_multiplier
                         hist_df['dividend_yield'] = hist_df['Annual_Dividends'] / hist_df['Close']
 
                         # Rolling windows (1260 days ≈ 5 years, 2520 days ≈ 10 years)
