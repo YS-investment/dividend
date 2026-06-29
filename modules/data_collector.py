@@ -493,7 +493,7 @@ class DividendDataCollector:
         options = webdriver.ChromeOptions()
 
         # Always run in headless mode (user requirement)
-        options.add_argument('--headless=new')
+        options.add_argument('--headless')
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
@@ -505,22 +505,30 @@ class DividendDataCollector:
         # User agent to avoid blocking
         options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36')
 
-        # Point to system Chromium binary if available (Streamlit Cloud)
-        chromium_bin = shutil.which('chromium') or shutil.which('chromium-browser')
+        # Resolve Chromium binary path (system install takes priority)
+        chromium_bin = (
+            shutil.which('chromium') or
+            shutil.which('chromium-browser') or
+            '/usr/bin/chromium' or
+            '/usr/bin/chromium-browser'
+        )
         if chromium_bin:
             options.binary_location = chromium_bin
 
-        # Try to use system chromium-driver first (Streamlit Cloud)
-        try:
-            chromium_driver_path = shutil.which('chromedriver')
+        # Resolve chromedriver path (system install takes priority)
+        chromedriver_path = (
+            shutil.which('chromedriver') or
+            '/usr/bin/chromedriver'
+        )
 
-            if chromium_driver_path:
-                print(f"Using system chromedriver: {chromium_driver_path}")
-                service = Service(chromium_driver_path)
+        if chromedriver_path:
+            try:
+                print(f"Using system chromedriver: {chromedriver_path}, browser: {chromium_bin}")
+                service = Service(chromedriver_path)
                 driver = webdriver.Chrome(service=service, options=options)
                 return driver
-        except Exception as e:
-            print(f"Could not use system chromedriver: {e}")
+            except Exception as e:
+                print(f"System chromedriver failed: {e}")
 
         # Fallback to webdriver-manager (local development)
         print("Using webdriver-manager to install chromedriver")
