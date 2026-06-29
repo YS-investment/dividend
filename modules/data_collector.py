@@ -512,8 +512,6 @@ class DividendDataCollector:
 
         # Try to use system chromium-driver first (Streamlit Cloud)
         try:
-            # On Streamlit Cloud, chromium-driver is installed via packages.txt
-            import shutil
             chromium_driver_path = shutil.which('chromedriver')
 
             if chromium_driver_path:
