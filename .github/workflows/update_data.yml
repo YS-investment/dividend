@@ -1,0 +1,48 @@
+name: Daily Dividend Data Update
+
+on:
+  schedule:
+    - cron: '0 22 * * 1-5'  # 10 PM UTC = 6 PM EDT / 5 PM EST, Mon-Fri
+  workflow_dispatch:          # Manual trigger from GitHub UI
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - uses: browser-actions/setup-chrome@v1
+        id: setup-chrome
+
+      - name: Link Chrome binaries to paths expected by data_collector.py
+        run: |
+          sudo ln -sf "${{ steps.setup-chrome.outputs.chrome-path }}" /usr/bin/chromium
+          sudo ln -sf "${{ steps.setup-chrome.outputs.chromedriver-path }}" /usr/bin/chromedriver
+          chromium --version
+          chromedriver --version
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run full data update pipeline
+        run: |
+          python -c "
+          from modules.data_collector import DividendDataCollector
+          DividendDataCollector().update_all_data(use_scraping=True)
+          "
+
+      - name: Commit and push updated data
+        run: |
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git config user.name "github-actions[bot]"
+          git add data/final_df2.csv data/dividend_from_stockanalysis.csv
+          git diff --staged --quiet && echo "No changes to commit" || \
+            (git commit -m "chore: auto-update dividend data $(date -u +'%Y-%m-%d')" && git push)
