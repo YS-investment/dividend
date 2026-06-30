@@ -19,17 +19,11 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
 
-      - uses: browser-actions/setup-chrome@v1
-        id: setup-chrome
-
-      - name: Link Chrome binaries to paths expected by data_collector.py
+      - name: Create /usr/bin/chromium symlink for data_collector.py
         run: |
-          CHROME_PATH="${{ steps.setup-chrome.outputs.chrome-path }}"
-          CHROME_DIR="$(dirname "$CHROME_PATH")"
-          sudo ln -sf "$CHROME_PATH" /usr/bin/chromium
-          sudo ln -sf "$CHROME_DIR/chromedriver" /usr/bin/chromedriver
+          CHROME=$(which google-chrome-stable 2>/dev/null || which google-chrome 2>/dev/null)
+          sudo ln -sf "$CHROME" /usr/bin/chromium
           chromium --version
-          chromedriver --version
 
       - name: Install Python dependencies
         run: pip install -r requirements.txt
