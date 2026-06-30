@@ -25,7 +25,7 @@ jobs:
       - name: Link Chrome binaries to paths expected by data_collector.py
         run: |
           sudo ln -sf "${{ steps.setup-chrome.outputs.chrome-path }}" /usr/bin/chromium
-          sudo ln -sf "${{ steps.setup-chrome.outputs.chromedriver-path }}" /usr/bin/chromedriver
+          sudo ln -sf "$(which chromedriver)" /usr/bin/chromedriver
           chromium --version
           chromedriver --version
 
