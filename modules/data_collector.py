@@ -438,16 +438,28 @@ class DividendDataCollector:
 
         return result
 
-    def _try_click(self, driver, xpath: str, label: str = ""):
-        """Click an element by XPath, closing any popup first. Logs result."""
+    def _dismiss_overlays(self, driver):
+        """Remove iframe overlays and dismiss popups that block clicks."""
         try:
-            popup = driver.find_element(By.XPATH, AppConfig.POPUP_XPATH)
-            popup.click()
-            time.sleep(0.5)
+            driver.execute_script("document.querySelectorAll('iframe').forEach(f => f.remove());")
         except:
             pass
         try:
-            driver.find_element(By.XPATH, xpath).click()
+            popup = driver.find_element(By.XPATH, AppConfig.POPUP_XPATH)
+            driver.execute_script("arguments[0].click();", popup)
+            time.sleep(0.5)
+        except:
+            pass
+
+    def _try_click(self, driver, xpath: str, label: str = ""):
+        """Click an element by XPath, removing overlays first. Falls back to JS click."""
+        self._dismiss_overlays(driver)
+        try:
+            element = driver.find_element(By.XPATH, xpath)
+            try:
+                element.click()
+            except:
+                driver.execute_script("arguments[0].click();", element)
             time.sleep(AppConfig.PAGE_LOAD_WAIT)
             print(f"  ✓ {label}")
         except Exception as e:
@@ -670,8 +682,12 @@ class DividendDataCollector:
                     # Navigate to next page
                     if page_num < AppConfig.MAX_SCRAPE_PAGES - 1:
                         try:
+                            self._dismiss_overlays(driver)
                             next_button = driver.find_element(By.XPATH, AppConfig.NEXT_BUTTON_XPATH)
-                            next_button.click()
+                            try:
+                                next_button.click()
+                            except:
+                                driver.execute_script("arguments[0].click();", next_button)
                             time.sleep(AppConfig.PAGE_LOAD_WAIT)
                         except Exception as e:
                             print(f"\n⚠ Could not navigate to next page: {e}")
