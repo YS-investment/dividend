@@ -11,6 +11,7 @@ class AppConfig:
     DATA_DIR = "data"
     MAIN_DATA_FILE = "final_df2.csv"
     RAW_DATA_FILE = "dividend_from_stockanalysis.csv"
+    LAST_UPDATED_FILE = "last_updated.txt"
     SECTOR_DATA_FILE = "sector_industry.csv"
     DIVIDEND_ARISTOCRATS_FILE = "dividend_aristocrats.csv"
     DIVIDEND_KINGS_FILE = "dividend_kings.csv"
@@ -160,3 +161,8 @@ def get_main_data_path() -> str:
 def get_raw_data_path() -> str:
     """Get path for raw scraped data"""
     return get_data_path(AppConfig.RAW_DATA_FILE)
+
+
+def get_last_updated_path() -> str:
+    """Get path for the data-update timestamp marker file"""
+    return get_data_path(AppConfig.LAST_UPDATED_FILE)

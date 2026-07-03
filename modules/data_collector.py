@@ -7,6 +7,7 @@ import pandas as pd
 import os
 import sys
 import time
+from datetime import datetime, timezone
 
 # Allow running as standalone script from any directory
 if __name__ == "__main__":
@@ -22,7 +23,7 @@ from webdriver_manager.chrome import ChromeDriverManager
 from tqdm import tqdm
 import yfinance as yf
 
-from config import AppConfig, get_data_path, get_main_data_path, get_raw_data_path
+from config import AppConfig, get_data_path, get_main_data_path, get_raw_data_path, get_last_updated_path
 
 
 class DividendDataCollector:
@@ -141,6 +142,11 @@ class DividendDataCollector:
         final_df.to_csv(output_path, index=False)
         print(f"✓ Final data saved to {output_path}")
         print(f"✓ Total stocks in final dataset: {len(final_df)}")
+
+        # Record the actual completion time (UTC), since file mtimes get
+        # reset on every git checkout/redeploy and don't reflect this.
+        with open(get_last_updated_path(), "w") as f:
+            f.write(datetime.now(timezone.utc).isoformat())
 
         print("\n" + "=" * 60)
         print("DATA UPDATE COMPLETE")
