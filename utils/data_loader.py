@@ -5,8 +5,11 @@ Data loading utilities for Dividend Stock Analysis Platform
 import pandas as pd
 import os
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from typing import Optional
 from config import AppConfig, get_main_data_path, get_raw_data_path
+
+US_EASTERN = ZoneInfo("America/New_York")
 
 
 class DataManager:
@@ -58,7 +61,7 @@ class DataManager:
         if os.path.exists(data_path):
             info['exists'] = True
             info['last_modified'] = datetime.fromtimestamp(
-                os.path.getmtime(data_path)
+                os.path.getmtime(data_path), tz=US_EASTERN
             )
             try:
                 df = pd.read_csv(data_path)

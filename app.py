@@ -7,7 +7,7 @@ import streamlit as st
 import os
 from datetime import datetime
 from utils.cache_manager import load_main_dataframe, clear_all_caches
-from utils.data_loader import DataManager, check_data_file_exists
+from utils.data_loader import DataManager, check_data_file_exists, US_EASTERN
 from config import AppConfig
 
 # Page configuration
@@ -48,7 +48,7 @@ st.sidebar.header("⚙️ Data Settings")
 
 data_source = st.sidebar.radio(
     "Select Data Source",
-    options=["📁 Use Existing Data (Fast)", "🔄 Crawl Latest Data (3-5 min)"],
+    options=["📁 Use Existing Data (Fast)", "🔄 Crawl Latest Data (local only)"],
     index=0,
     help="Existing data loads instantly. Crawling provides latest information."
 )
@@ -64,7 +64,7 @@ if not crawl_mode_selected:
         if data_info['exists']:
             st.sidebar.success("✅ Using Existing Data")
             st.sidebar.info(
-                f"📅 Last Updated: {data_info['last_modified'].strftime('%Y-%m-%d %H:%M')}"
+                f"📅 Last Updated: {data_info['last_modified'].strftime('%Y-%m-%d %H:%M')} ET"
             )
             st.sidebar.metric("Total Stocks", f"{data_info.get('row_count', 'N/A'):,}")
     else:
@@ -79,7 +79,7 @@ else:
     if st.session_state['update_completed']:
         st.sidebar.success("✅ Data updated successfully!")
         if 'last_update' in st.session_state:
-            st.sidebar.info(f"🕐 Updated: {st.session_state['last_update']}")
+            st.sidebar.info(f"🕐 Updated: {st.session_state['last_update']} ET")
         if 'update_stats' in st.session_state:
             st.sidebar.markdown("### 📊 Update Summary")
             stats = st.session_state['update_stats']
@@ -142,7 +142,7 @@ else:
                 progress_bar.progress(100)
 
                 # Store completion info in session state
-                update_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                update_time = datetime.now(US_EASTERN).strftime('%Y-%m-%d %H:%M:%S')
                 st.session_state['last_update'] = update_time
                 st.session_state['data_source'] = 'crawled'
 
