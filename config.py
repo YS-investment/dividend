@@ -59,30 +59,42 @@ class AppConfig:
     # Default filter values - High Dividend
     DEFAULT_MIN_YIELD = 0.035
     DEFAULT_PAYOUT_MIN = 0.20
-    DEFAULT_PAYOUT_MAX = 0.80
+    DEFAULT_PAYOUT_MAX = 0.70
     DEFAULT_MIN_YEARS = 5
     DEFAULT_MIN_DIV_YEARS = 5
-    DEFAULT_MIN_GROWTH = 0.01
-    DEFAULT_MIN_GROWTH_5Y = 0.01
+    DEFAULT_MIN_GROWTH = 0.03
+    DEFAULT_MIN_GROWTH_5Y = 0.03
+
+    # Dividend yield above this is flagged as "verify for price collapse"
+    # rather than filtered out (see High Dividend Screener Alert column)
+    HIGH_YIELD_WARNING_THRESHOLD = 0.10
 
     # Scoring weights (High Dividend)
+    # yield lowered from 0.5 -> 0.35; freed weight plus the existing payout
+    # weight is redistributed across sustainability metrics (payout, FCF
+    # coverage, debt) so quality/safety signals carry more weight than yield alone.
     HIGH_DIV_WEIGHTS = {
-        'yield': 0.5,
-        'years': 0.1,
-        'div_years': 0.1,
-        'cagr': 0.1,
-        'growth': 0.1,
-        'payout': 0.1
+        'yield': 0.35,
+        'years': 0.10,
+        'div_years': 0.10,
+        'cagr': 0.10,
+        'growth': 0.10,
+        'payout': 0.10,
+        'fcf_coverage': 0.10,
+        'debt': 0.05
     }
 
     # Scoring weights (Dividend Growth)
+    # payout weight raised 0.10 -> 0.17 (room-to-grow / sustainability signal),
+    # funded by lowering yield and 1Y growth, which are secondary to the 5Y
+    # CAGR track record for a growth-focused screen.
     DIV_GROWTH_WEIGHTS = {
         'cagr': 0.35,
-        'growth': 0.2,
-        'yield': 0.25,
-        'years': 0.05,
-        'div_years': 0.05,
-        'payout': 0.1
+        'growth': 0.15,
+        'yield': 0.20,
+        'years': 0.07,
+        'div_years': 0.06,
+        'payout': 0.17
     }
 
     # Cache settings

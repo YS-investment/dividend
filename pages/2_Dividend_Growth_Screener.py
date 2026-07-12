@@ -11,7 +11,8 @@ from modules.data_processor import (
     calculate_normalized_metrics,
     calculate_composite_score,
     get_top_stocks,
-    add_market_cap_tier
+    add_market_cap_tier,
+    add_chowder_number
 )
 from modules.visualization import (
     create_top_stocks_bar_chart,
@@ -41,7 +42,7 @@ st.sidebar.header("🔍 Filter Criteria")
 min_yield = st.sidebar.slider(
     "Minimum Dividend Yield (%)",
     min_value=0.0,
-    max_value=15.0,
+    max_value=10.0,  # Growth screener targets lower current yield, higher growth
     value=2.0,  # Lower default for growth stocks
     step=0.1
 )
@@ -50,7 +51,7 @@ payout_range = st.sidebar.slider(
     "Payout Ratio Range (%)",
     min_value=0,
     max_value=100,
-    value=(15, 70),  # Lower for growth potential
+    value=(15, 60),  # Upper bound aligned to the growth-stock payout "sweet spot"
     step=5
 )
 
@@ -58,7 +59,7 @@ min_years = st.sidebar.slider(
     "Minimum Dividend Growth Years",
     min_value=0,
     max_value=70,
-    value=5,
+    value=10,  # Aligned with Dividend Achievers / Dividend Growers index entry bar
     step=1,
     help="Consecutive years of dividend increase"
 )
@@ -67,7 +68,7 @@ min_div_years = st.sidebar.slider(
     "Minimum Dividend Payment Years",
     min_value=0,
     max_value=70,
-    value=5,
+    value=10,
     step=1,
     help="Consecutive years of dividend payments (without decrease)"
 )
@@ -120,14 +121,14 @@ col1, col2, col3, col4, col5 = st.columns(5)
 with col1:
     w_cagr = st.number_input("5Y CAGR", min_value=0.0, max_value=1.0, value=0.35, step=0.05)
 with col2:
-    w_yield = st.number_input("Dividend Yield", min_value=0.0, max_value=1.0, value=0.25, step=0.05)
+    w_yield = st.number_input("Dividend Yield", min_value=0.0, max_value=1.0, value=0.20, step=0.05)
 with col3:
-    w_growth = st.number_input("1Y Growth", min_value=0.0, max_value=1.0, value=0.20, step=0.05)
+    w_growth = st.number_input("1Y Growth", min_value=0.0, max_value=1.0, value=0.15, step=0.05)
 with col4:
-    w_years = st.number_input("Growth Years", min_value=0.0, max_value=1.0, value=0.05, step=0.05)
-    w_div_years = st.number_input("Payment Years", min_value=0.0, max_value=1.0, value=0.05, step=0.05)
+    w_years = st.number_input("Growth Years", min_value=0.0, max_value=1.0, value=0.07, step=0.01)
+    w_div_years = st.number_input("Payment Years", min_value=0.0, max_value=1.0, value=0.06, step=0.01)
 with col5:
-    w_payout = st.number_input("Payout Ratio", min_value=0.0, max_value=1.0, value=0.10, step=0.05)
+    w_payout = st.number_input("Payout Ratio", min_value=0.0, max_value=1.0, value=0.17, step=0.05)
 
 # Validate weights
 total_weight = w_yield + w_years + w_div_years + w_cagr + w_growth + w_payout
@@ -166,8 +167,19 @@ if len(filtered_df) > 0:
 
     filtered_df = calculate_normalized_metrics(filtered_df)
     filtered_df = calculate_composite_score(filtered_df, weights=weights, score_type='dividend_growth')
+    filtered_df = add_chowder_number(filtered_df)
 
     st.subheader(f"📋 Screener Results ({len(filtered_df)} stocks found)")
+
+    with st.expander("ℹ️ Chowder Number"):
+        st.markdown("""
+        **Chowder Number = Div. Yield (%) + 5Y Dividend Growth CAGR (%)**
+
+        A dividend-growth-investing heuristic for expected long-term total return.
+        Informational only - it does not filter results or affect the composite score.
+        - Yield ≥ 3%: look for Chowder Number ≥ 12
+        - Yield < 3%: look for Chowder Number ≥ 15
+        """)
 
     # Display market cap tier classification
     with st.expander("ℹ️ Market Cap Tier Classification (Russell Index)"):
@@ -182,7 +194,7 @@ if len(filtered_df) > 0:
 
     # Column selector
     all_columns = filtered_df.columns.tolist()
-    default_columns = ['Symbol', 'Company Name', 'Category', 'Sector', 'Market Cap', 'mkt_cap_tier', 'Div. Growth 5Y', 'Div. Growth', 'Div. Yield', 'Div. Gr. Years', 'Div. Years', 'dividend_growth_composite']
+    default_columns = ['Symbol', 'Company Name', 'Category', 'Sector', 'Market Cap', 'mkt_cap_tier', 'Div. Growth 5Y', 'Div. Growth', 'Div. Yield', 'chowder_number', 'Div. Gr. Years', 'Div. Years', 'dividend_growth_composite']
     available_default = [col for col in default_columns if col in all_columns]
 
     display_columns = st.multiselect(

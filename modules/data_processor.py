@@ -29,6 +29,44 @@ def normalize(series: pd.Series) -> pd.Series:
     return (series - min_val) / (max_val - min_val)
 
 
+def normalize_with_missing_and_outliers(
+    series: pd.Series,
+    missing_value: float = 0.0,
+    invert: bool = False
+) -> pd.Series:
+    """
+    Normalize a metric that uses `missing_value` as a "no data" sentinel
+    (e.g. FCF_Dividend_Ratio / Debt_to_Equity default to 0.0 when yfinance
+    has no data for a symbol). Entries equal to missing_value are excluded
+    from the min/max calculation and scored neutrally (0.5) instead of
+    being penalized. Remaining values are winsorized to the 1st/99th
+    percentile before min-max scaling so a single extreme outlier (e.g. a
+    debt-to-equity of 4876) doesn't compress everyone else's score toward 0.
+
+    Args:
+        series: Raw metric values
+        missing_value: Sentinel value that marks "no data" (default: 0.0)
+        invert: If True, lower raw values score higher (e.g. debt ratio)
+
+    Returns:
+        Series normalized to 0-1, with missing entries set to 0.5
+    """
+    working = series.replace(missing_value, np.nan)
+    valid = working.dropna()
+
+    if valid.empty:
+        return pd.Series(0.5, index=series.index)
+
+    lower, upper = valid.quantile(0.01), valid.quantile(0.99)
+    clipped = working.clip(lower=lower, upper=upper)
+
+    norm = normalize(clipped)
+    if invert:
+        norm = 1 - norm
+
+    return norm.fillna(0.5)
+
+
 def filter_stocks(
     df: pd.DataFrame,
     min_yield: float = AppConfig.DEFAULT_MIN_YIELD,
@@ -127,6 +165,18 @@ def calculate_normalized_metrics(df: pd.DataFrame) -> pd.DataFrame:
         # Using fixed bounds from filtering criteria
         result['norm_payout'] = (0.8 - result['Payout Ratio']) / (0.8 - 0.2)
 
+    # FCF/Dividend coverage - higher is better; 0.0 means yfinance had no data
+    if 'FCF_Dividend_Ratio' in result.columns:
+        result['norm_fcf_coverage'] = normalize_with_missing_and_outliers(
+            result['FCF_Dividend_Ratio']
+        )
+
+    # Debt-to-Equity - lower is better; 0.0 means yfinance had no data
+    if 'Debt_to_Equity' in result.columns:
+        result['norm_debt'] = normalize_with_missing_and_outliers(
+            result['Debt_to_Equity'], invert=True
+        )
+
     return result
 
 
@@ -172,8 +222,34 @@ def calculate_composite_score(
         weights.get('div_years', 0) * result.get('norm_div_years', 0) +
         weights.get('cagr', 0) * result.get('norm_cagr', 0) +
         weights.get('growth', 0) * result.get('norm_div_growth', 0) +
-        weights.get('payout', 0) * result.get('norm_payout', 0)
+        weights.get('payout', 0) * result.get('norm_payout', 0) +
+        weights.get('fcf_coverage', 0) * result.get('norm_fcf_coverage', 0) +
+        weights.get('debt', 0) * result.get('norm_debt', 0)
     )
+
+    return result
+
+
+def add_chowder_number(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Add the "Chowder Number" (Div. Yield % + 5Y Div. Growth CAGR %), a
+    dividend-growth-investing heuristic for expected long-term total return.
+    Informational only - not used in composite scoring or filtering.
+    Rule of thumb: yield >= 3% wants a Chowder Number >= 12; yield < 3%
+    wants >= 15.
+
+    Args:
+        df: DataFrame with 'Div. Yield' and 'Div. Growth 5Y' (decimal) columns
+
+    Returns:
+        DataFrame with 'chowder_number' column added
+    """
+    result = df.copy()
+
+    if 'Div. Yield' in result.columns and 'Div. Growth 5Y' in result.columns:
+        result['chowder_number'] = (
+            (result['Div. Yield'].fillna(0) + result['Div. Growth 5Y'].fillna(0)) * 100
+        ).round(1)
 
     return result
 

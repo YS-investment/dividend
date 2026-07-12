@@ -51,7 +51,7 @@ payout_range = st.sidebar.slider(
     "Payout Ratio Range (%)",
     min_value=0,
     max_value=100,
-    value=(20, 80),
+    value=(20, 70),
     step=5,
     help="Healthy payout ratio indicates sustainability"
 )
@@ -78,7 +78,7 @@ min_growth = st.sidebar.slider(
     "Minimum 1Y Dividend Growth (%)",
     min_value=0.0,
     max_value=50.0,
-    value=1.0,
+    value=3.0,
     step=0.5,
     help="Year-over-year dividend growth rate"
 )
@@ -87,7 +87,7 @@ min_growth_5y = st.sidebar.slider(
     "Minimum 5Y Dividend Growth (CAGR %)",
     min_value=0.0,
     max_value=50.0,
-    value=1.0,
+    value=3.0,
     step=0.5,
     help="5-year compound annual growth rate"
 )
@@ -120,22 +120,25 @@ else:
 st.subheader("⚖️ Customize Scoring Weights")
 st.markdown("Adjust weights to prioritize different metrics (must sum to 1.0)")
 
-col1, col2, col3, col4, col5 = st.columns(5)
+col1, col2, col3, col4 = st.columns(4)
 
 with col1:
-    w_yield = st.number_input("Dividend Yield", min_value=0.0, max_value=1.0, value=0.5, step=0.05)
+    w_yield = st.number_input("Dividend Yield", min_value=0.0, max_value=1.0, value=0.35, step=0.05)
+    w_payout = st.number_input("Payout Ratio", min_value=0.0, max_value=1.0, value=0.10, step=0.05)
 with col2:
-    w_years = st.number_input("Growth Years", min_value=0.0, max_value=1.0, value=0.1, step=0.05)
-    w_div_years = st.number_input("Payment Years", min_value=0.0, max_value=1.0, value=0.1, step=0.05)
+    w_years = st.number_input("Growth Years", min_value=0.0, max_value=1.0, value=0.10, step=0.05)
+    w_div_years = st.number_input("Payment Years", min_value=0.0, max_value=1.0, value=0.10, step=0.05)
 with col3:
-    w_cagr = st.number_input("5Y CAGR", min_value=0.0, max_value=1.0, value=0.1, step=0.05)
+    w_cagr = st.number_input("5Y CAGR", min_value=0.0, max_value=1.0, value=0.10, step=0.05)
+    w_growth = st.number_input("1Y Growth", min_value=0.0, max_value=1.0, value=0.10, step=0.05)
 with col4:
-    w_growth = st.number_input("1Y Growth", min_value=0.0, max_value=1.0, value=0.1, step=0.05)
-with col5:
-    w_payout = st.number_input("Payout Ratio", min_value=0.0, max_value=1.0, value=0.1, step=0.05)
+    w_fcf = st.number_input("FCF Coverage", min_value=0.0, max_value=1.0, value=0.10, step=0.05,
+                             help="FCF / Dividends paid - higher means more room to cover the dividend")
+    w_debt = st.number_input("Debt/Equity", min_value=0.0, max_value=1.0, value=0.05, step=0.05,
+                              help="Lower debt-to-equity scores higher (less leverage risk)")
 
 # Validate weights
-total_weight = w_yield + w_years + w_div_years + w_cagr + w_growth + w_payout
+total_weight = w_yield + w_years + w_div_years + w_cagr + w_growth + w_payout + w_fcf + w_debt
 if abs(total_weight - 1.0) > 0.01:
     st.warning(f"⚠️ Weights sum to {total_weight:.2f}. Please adjust to 1.0")
     st.stop()
@@ -167,11 +170,22 @@ if len(filtered_df) > 0:
         'div_years': w_div_years,
         'cagr': w_cagr,
         'growth': w_growth,
-        'payout': w_payout
+        'payout': w_payout,
+        'fcf_coverage': w_fcf,
+        'debt': w_debt
     }
 
     filtered_df = calculate_normalized_metrics(filtered_df)
     filtered_df = calculate_composite_score(filtered_df, weights=weights, score_type='high_dividend')
+
+    # Flag abnormally high yields for manual review rather than filtering them out -
+    # a spiked yield is often a symptom of a falling stock price, not a bargain.
+    if 'Div. Yield' in filtered_df.columns:
+        filtered_df['Alert'] = filtered_df['Div. Yield'].apply(
+            lambda y: '⚠️ 주가급락 확인필요'
+            if pd.notna(y) and y > AppConfig.HIGH_YIELD_WARNING_THRESHOLD
+            else ''
+        )
 
     st.subheader(f"📋 Screener Results ({len(filtered_df)} stocks found)")
 
@@ -188,7 +202,7 @@ if len(filtered_df) > 0:
 
     # Column selector
     all_columns = filtered_df.columns.tolist()
-    default_columns = ['Symbol', 'Company Name', 'Category', 'Sector', 'Market Cap', 'mkt_cap_tier', 'Div. Yield', 'Payout Ratio', 'Div. Gr. Years', 'Div. Years', 'Div. Growth 5Y', 'high_div_composite']
+    default_columns = ['Symbol', 'Alert', 'Company Name', 'Category', 'Sector', 'Market Cap', 'mkt_cap_tier', 'Div. Yield', 'Payout Ratio', 'FCF_Dividend_Ratio', 'Debt_to_Equity', 'Div. Gr. Years', 'Div. Years', 'Div. Growth 5Y', 'high_div_composite']
     available_default = [col for col in default_columns if col in all_columns]
 
     display_columns = st.multiselect(
