@@ -845,10 +845,11 @@ class DividendDataCollector:
             'Industry',
             'FCF_Dividend_Ratio',
             'Debt_to_Equity',
-            'ROE'
+            'ROE',
+            'EPS_Growth'
         ]
         for col in yf_columns:
-            if 'dividend' in col.lower() or col in ['FCF_Dividend_Ratio', 'Debt_to_Equity', 'ROE']:
+            if 'dividend' in col.lower() or col in ['FCF_Dividend_Ratio', 'Debt_to_Equity', 'ROE', 'EPS_Growth']:
                 result[col] = 0.0
             else:
                 result[col] = ''
@@ -899,6 +900,13 @@ class DividendDataCollector:
                     if roe:
                         # ROE comes as decimal (e.g., 0.15 for 15%), convert to percentage
                         result.loc[result['Symbol'] == ticker_symbol, 'ROE'] = round(roe * 100, 2)
+
+                    # Trailing YoY earnings growth (decimal, e.g. 0.15 for 15%) -
+                    # kept in the same decimal scale as Div. Growth / Div. Growth 5Y
+                    # so it can be compared directly against dividend growth rates.
+                    eps_growth = ticker_obj.info.get('earningsGrowth', 0)
+                    if eps_growth:
+                        result.loc[result['Symbol'] == ticker_symbol, 'EPS_Growth'] = round(eps_growth, 4)
                 except:
                     pass
 

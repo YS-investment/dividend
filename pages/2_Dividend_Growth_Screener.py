@@ -12,7 +12,8 @@ from modules.data_processor import (
     calculate_composite_score,
     get_top_stocks,
     add_market_cap_tier,
-    add_chowder_number
+    add_chowder_number,
+    add_eps_growth_alert
 )
 from modules.visualization import (
     create_top_stocks_bar_chart,
@@ -168,6 +169,7 @@ if len(filtered_df) > 0:
     filtered_df = calculate_normalized_metrics(filtered_df)
     filtered_df = calculate_composite_score(filtered_df, weights=weights, score_type='dividend_growth')
     filtered_df = add_chowder_number(filtered_df)
+    filtered_df = add_eps_growth_alert(filtered_df)
 
     st.subheader(f"📋 Screener Results ({len(filtered_df)} stocks found)")
 
@@ -179,6 +181,16 @@ if len(filtered_df) > 0:
         Informational only - it does not filter results or affect the composite score.
         - Yield ≥ 3%: look for Chowder Number ≥ 12
         - Yield < 3%: look for Chowder Number ≥ 15
+        """)
+
+    with st.expander("⚠️ EPS Growth Alert"):
+        st.markdown("""
+        **EPS_Alert flags stocks where 1Y dividend growth > 1Y EPS (earnings) growth.**
+
+        When dividends grow faster than earnings, the increase is coming from a
+        rising payout ratio rather than genuine earnings growth - harder to
+        sustain long-term. Informational only - it does not filter results or
+        affect the composite score. Stocks with no EPS data available are not flagged.
         """)
 
     # Display market cap tier classification
@@ -194,7 +206,7 @@ if len(filtered_df) > 0:
 
     # Column selector
     all_columns = filtered_df.columns.tolist()
-    default_columns = ['Symbol', 'Company Name', 'Category', 'Sector', 'Market Cap', 'mkt_cap_tier', 'Div. Growth 5Y', 'Div. Growth', 'Div. Yield', 'chowder_number', 'Div. Gr. Years', 'Div. Years', 'dividend_growth_composite']
+    default_columns = ['Symbol', 'EPS_Alert', 'Company Name', 'Category', 'Sector', 'Market Cap', 'mkt_cap_tier', 'Div. Growth 5Y', 'Div. Growth', 'EPS_Growth', 'Div. Yield', 'chowder_number', 'Div. Gr. Years', 'Div. Years', 'dividend_growth_composite']
     available_default = [col for col in default_columns if col in all_columns]
 
     display_columns = st.multiselect(
@@ -213,7 +225,7 @@ if len(filtered_df) > 0:
         display_df = sorted_df[display_columns].head(50).copy()
 
         # Format percentage columns
-        pct_cols = ['Div. Yield', 'Payout Ratio', 'Div. Growth', 'Div. Growth 5Y']
+        pct_cols = ['Div. Yield', 'Payout Ratio', 'Div. Growth', 'Div. Growth 5Y', 'EPS_Growth']
         for col in pct_cols:
             if col in display_df.columns:
                 display_df[col] = (display_df[col] * 100).round(2).astype(str) + '%'

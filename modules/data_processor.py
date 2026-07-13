@@ -254,6 +254,39 @@ def add_chowder_number(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
+def add_eps_growth_alert(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Flag stocks whose 1Y dividend growth has outpaced 1Y EPS (earnings)
+    growth - a sign the dividend increase came from payout ratio expansion
+    rather than genuine earnings growth, which is harder to sustain.
+    Informational only; does not filter results or affect composite scores.
+
+    Compared on the same 1-year basis (Div. Growth vs EPS_Growth) since
+    yfinance's `earningsGrowth` is a trailing YoY figure, not a multi-year
+    CAGR like Div. Growth 5Y.
+
+    Args:
+        df: DataFrame with 'Div. Growth' and 'EPS_Growth' (decimal) columns
+
+    Returns:
+        DataFrame with 'EPS_Alert' column added
+    """
+    result = df.copy()
+
+    if 'Div. Growth' in result.columns and 'EPS_Growth' in result.columns:
+        def _flag(row):
+            div_growth = row['Div. Growth']
+            eps_growth = row['EPS_Growth']
+            # eps_growth == 0.0 means yfinance had no data - don't flag on missing data
+            if pd.isna(div_growth) or pd.isna(eps_growth) or eps_growth == 0:
+                return ''
+            return '⚠️ 이익성장 대비 배당성장 과도' if div_growth > eps_growth else ''
+
+        result['EPS_Alert'] = result.apply(_flag, axis=1)
+
+    return result
+
+
 def get_top_stocks(
     df: pd.DataFrame,
     score_column: str = 'high_div_composite',
