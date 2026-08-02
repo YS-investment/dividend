@@ -31,7 +31,7 @@ def normalize(series: pd.Series) -> pd.Series:
 
 def normalize_with_missing_and_outliers(
     series: pd.Series,
-    missing_value: float = 0.0,
+    missing_value: float = None,  # None means use natural NaN
     invert: bool = False
 ) -> pd.Series:
     """
@@ -51,7 +51,10 @@ def normalize_with_missing_and_outliers(
     Returns:
         Series normalized to 0-1, with missing entries set to 0.5
     """
-    working = series.replace(missing_value, np.nan)
+    if missing_value is not None:
+        working = series.replace(missing_value, np.nan)
+    else:
+        working = series.copy()
     valid = working.dropna()
 
     if valid.empty:
@@ -278,7 +281,7 @@ def add_eps_growth_alert(df: pd.DataFrame) -> pd.DataFrame:
             div_growth = row['Div. Growth']
             eps_growth = row['EPS_Growth']
             # eps_growth == 0.0 means yfinance had no data - don't flag on missing data
-            if pd.isna(div_growth) or pd.isna(eps_growth) or eps_growth == 0:
+            if pd.isna(div_growth) or pd.isna(eps_growth):
                 return ''
             return '⚠️ 이익성장 대비 배당성장 과도' if div_growth > eps_growth else ''
 

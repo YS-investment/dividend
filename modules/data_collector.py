@@ -855,7 +855,7 @@ class DividendDataCollector:
             if col in ('Sector', 'Industry'):
                 result[col] = ''
             elif col in ['FCF_Dividend_Ratio', 'Debt_to_Equity', 'ROE', 'EPS_Growth']:
-                result[col] = 0.0  # Will be changed to NaN in commit 6
+                result[col] = np.nan
             else:
                 # Initialize bands and fiveYearAvg with NaN to distinguish from 0
                 result[col] = np.nan
