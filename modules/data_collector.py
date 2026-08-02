@@ -852,10 +852,13 @@ class DividendDataCollector:
             'EPS_Growth'
         ]
         for col in yf_columns:
-            if 'dividend' in col.lower() or col in ['FCF_Dividend_Ratio', 'Debt_to_Equity', 'ROE', 'EPS_Growth']:
-                result[col] = 0.0
-            else:
+            if col in ('Sector', 'Industry'):
                 result[col] = ''
+            elif col in ['FCF_Dividend_Ratio', 'Debt_to_Equity', 'ROE', 'EPS_Growth']:
+                result[col] = 0.0  # Will be changed to NaN in commit 6
+            else:
+                # Initialize bands and fiveYearAvg with NaN to distinguish from 0
+                result[col] = np.nan
 
         # Process each ticker
         for ticker_symbol in tqdm(result['Symbol'], desc="Fetching Yahoo Finance data"):
@@ -939,43 +942,48 @@ class DividendDataCollector:
 
                 # Calculate rolling metrics from 11-year history
                 try:
-                    hist_df = ticker_obj.history(period="11y")[['Dividends', 'Close']]
+                    hist_df = ticker_obj.history(period="11y")[['Close']]
+                    div_series = ticker_obj.dividends
+
+                    # Align timezone
+                    if div_series.index.tz is not None:
+                        div_series.index = div_series.index.tz_localize(None)
+                    if hist_df.index.tz is not None:
+                        hist_df.index = hist_df.index.tz_localize(None)
 
                     if not hist_df.empty:
-                        # Forward-fill dividends and calculate yield
-                        hist_df['Dividends'] = hist_df['Dividends'].replace(0, float('nan')).ffill()
-
-                        # Annualization multiplier based on payout frequency
-                        payout_freq = result.loc[result['Symbol'] == ticker_symbol, 'Payout Freq.'].values
-                        freq_str = payout_freq[0].strip().lower() if len(payout_freq) > 0 and payout_freq[0] else 'quarterly'
-                        if 'monthly' in freq_str:
-                            annual_multiplier = 12
-                        elif 'semi' in freq_str or 'bi-annual' in freq_str or 'biannual' in freq_str:
-                            annual_multiplier = 2
-                        elif 'annual' in freq_str and 'semi' not in freq_str and 'bi' not in freq_str:
-                            annual_multiplier = 1
-                        else:  # quarterly (default)
-                            annual_multiplier = 4
-
-                        hist_df['Annual_Dividends'] = hist_df['Dividends'] * annual_multiplier
+                        # TTM (trailing 12 months) annual dividend — sum of actual
+                        # payments in rolling 365-day window. No Payout Freq. needed.
+                        ttm_annual = div_series.rolling('365D').sum()
+                        hist_df['Annual_Dividends'] = ttm_annual.reindex(hist_df.index, method='ffill')
                         hist_df['dividend_yield'] = hist_df['Annual_Dividends'] / hist_df['Close']
+                        hist_df = hist_df.dropna(subset=['dividend_yield'])
 
-                        # Rolling windows (1260 days ≈ 5 years, 2520 days ≈ 10 years)
-                        hist_df['T5Y_avg'] = hist_df['dividend_yield'].rolling(window=1260).mean()
-                        hist_df['T5Y_min'] = hist_df['dividend_yield'].rolling(window=1260).min()
-                        hist_df['T5Y_max'] = hist_df['dividend_yield'].rolling(window=1260).max()
-                        hist_df['T10Y_avg'] = hist_df['dividend_yield'].rolling(window=2520).mean()
-                        hist_df['T10Y_min'] = hist_df['dividend_yield'].rolling(window=2520).min()
-                        hist_df['T10Y_max'] = hist_df['dividend_yield'].rolling(window=2520).max()
+                        # Time-based rolling windows with min_periods
+                        min_periods_5y = 756   # ~3 years minimum for 5Y window
+                        min_periods_10y = 1512 # ~6 years minimum for 10Y window
+
+                        hist_df['T5Y_avg'] = hist_df['dividend_yield'].rolling('1825D', min_periods=min_periods_5y).mean()
+                        hist_df['T5Y_min'] = hist_df['dividend_yield'].rolling('1825D', min_periods=min_periods_5y).min()
+                        hist_df['T5Y_max'] = hist_df['dividend_yield'].rolling('1825D', min_periods=min_periods_5y).max()
+                        hist_df['T10Y_avg'] = hist_df['dividend_yield'].rolling('3650D', min_periods=min_periods_10y).mean()
+                        hist_df['T10Y_min'] = hist_df['dividend_yield'].rolling('3650D', min_periods=min_periods_10y).min()
+                        hist_df['T10Y_max'] = hist_df['dividend_yield'].rolling('3650D', min_periods=min_periods_10y).max()
 
                         # Get latest values
                         if len(hist_df) > 0:
-                            result.loc[result['Symbol'] == ticker_symbol, 'Trainling_5Y_avg_dividend_yield'] = hist_df['T5Y_avg'].iloc[-1] if not pd.isna(hist_df['T5Y_avg'].iloc[-1]) else 0.0
-                            result.loc[result['Symbol'] == ticker_symbol, 'Trainling_5Y_min_dividend_yield'] = hist_df['T5Y_min'].iloc[-1] if not pd.isna(hist_df['T5Y_min'].iloc[-1]) else 0.0
-                            result.loc[result['Symbol'] == ticker_symbol, 'Trainling_5Y_max_dividend_yield'] = hist_df['T5Y_max'].iloc[-1] if not pd.isna(hist_df['T5Y_max'].iloc[-1]) else 0.0
-                            result.loc[result['Symbol'] == ticker_symbol, 'Trainling_10Y_avg_dividend_yield'] = hist_df['T10Y_avg'].iloc[-1] if not pd.isna(hist_df['T10Y_avg'].iloc[-1]) else 0.0
-                            result.loc[result['Symbol'] == ticker_symbol, 'Trainling_10Y_min_dividend_yield'] = hist_df['T10Y_min'].iloc[-1] if not pd.isna(hist_df['T10Y_min'].iloc[-1]) else 0.0
-                            result.loc[result['Symbol'] == ticker_symbol, 'Trainling_10Y_max_dividend_yield'] = hist_df['T10Y_max'].iloc[-1] if not pd.isna(hist_df['T10Y_max'].iloc[-1]) else 0.0
+                            for band_col, src_col in [
+                                ('Trainling_5Y_avg_dividend_yield', 'T5Y_avg'),
+                                ('Trainling_5Y_min_dividend_yield', 'T5Y_min'),
+                                ('Trainling_5Y_max_dividend_yield', 'T5Y_max'),
+                                ('Trainling_10Y_avg_dividend_yield', 'T10Y_avg'),
+                                ('Trainling_10Y_min_dividend_yield', 'T10Y_min'),
+                                ('Trainling_10Y_max_dividend_yield', 'T10Y_max'),
+                            ]:
+                                val = hist_df[src_col].iloc[-1]
+                                if not pd.isna(val):
+                                    result.loc[result['Symbol'] == ticker_symbol, band_col] = val
+                                # Keep as NaN if missing
 
                 except Exception as e:
                     failures.append((ticker_symbol, 'rolling_metrics', str(e)[:100]))
