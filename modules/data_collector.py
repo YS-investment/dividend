@@ -881,19 +881,41 @@ class DividendDataCollector:
 
                 # Get financial metrics (FCF/Dividend Ratio, Debt-to-Equity, ROE)
                 try:
-                    # FCF/Dividend Ratio calculation
-                    # free_cash_flow = ticker_obj.info.get('freeCashflow', 0)
-                    # total_dividend_paid = ticker_obj.info.get('dividendsPaid', 0)
-                    fcf = ticker_obj.info.get('freeCashflow', 0)
-                    shares = ticker_obj.info.get('sharesOutstanding', 0)
-                    div_rate = ticker_obj.info.get('dividendRate', 0)
+                    # FCF/Dividend Ratio — try cashflow statement first (stable),
+                    # fall back to info API (volatile day-to-day).
+                    fcf_ratio = None
 
-                    if fcf !=0 and shares > 0 and div_rate > 0:
-                        # 1. 총 배당금 지급액 추정 (주식 수 * 주당 배당금)
-                        total_dividend_estimated = shares * div_rate
-                        # dividendsPaid is negative, so use abs()
-                        fcf_dividend_ratio = fcf / total_dividend_estimated
-                        result.loc[result['Symbol'] == ticker_symbol, 'FCF_Dividend_Ratio'] = round(fcf_dividend_ratio, 2)
+                    # Method 1: Cash flow statement (preferred — higher coverage)
+                    try:
+                        cf = ticker_obj.cashflow
+                        if cf is not None and not cf.empty:
+                            fcf_val = None
+                            if 'Free Cash Flow' in cf.index:
+                                s = cf.loc['Free Cash Flow'].dropna()
+                                if len(s):
+                                    fcf_val = float(s.iloc[0])
+                            div_paid = None
+                            for key in ('Cash Dividends Paid', 'Common Stock Dividend Paid', 'Dividends Paid'):
+                                if key in cf.index:
+                                    v = cf.loc[key].dropna()
+                                    if len(v):
+                                        div_paid = abs(float(v.iloc[0]))
+                                        break
+                            if fcf_val is not None and div_paid and div_paid > 0:
+                                fcf_ratio = round(fcf_val / div_paid, 2)
+                    except Exception:
+                        pass
+
+                    # Method 2: info API (fallback)
+                    if fcf_ratio is None:
+                        fcf = ticker_obj.info.get('freeCashflow', 0)
+                        shares = ticker_obj.info.get('sharesOutstanding', 0)
+                        div_rate = ticker_obj.info.get('dividendRate', 0)
+                        if fcf != 0 and shares > 0 and div_rate > 0:
+                            fcf_ratio = round(fcf / (shares * div_rate), 2)
+
+                    if fcf_ratio is not None:
+                        result.loc[result['Symbol'] == ticker_symbol, 'FCF_Dividend_Ratio'] = fcf_ratio
 
                     # Debt-to-Equity Ratio
                     debt_to_equity = ticker_obj.info.get('debtToEquity', 0)
