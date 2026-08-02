@@ -857,7 +857,11 @@ class DividendDataCollector:
         # Process each ticker
         for ticker_symbol in tqdm(result['Symbol'], desc="Fetching Yahoo Finance data"):
             try:
-                ticker_obj = yf.Ticker(ticker_symbol)
+                # yfinance uses hyphens for class shares (e.g. BF-B),
+                # while StockAnalysis uses dots (BF.B).
+                # Convert only for yfinance calls; keep Symbol column as-is.
+                yf_symbol = ticker_symbol.replace('.', '-')
+                ticker_obj = yf.Ticker(yf_symbol)
 
                 # Get 5-year average from info
                 try:
