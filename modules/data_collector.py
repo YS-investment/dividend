@@ -832,6 +832,9 @@ class DividendDataCollector:
         print("\nEnriching data with Yahoo Finance metrics...")
         result = df.copy()
 
+        # Track enrichment failures for diagnostics
+        failures = []  # list of (symbol, stage, reason)
+
         # Initialize new columns
         yf_columns = [
             'fiveYearAvgDivdendYield',
@@ -868,15 +871,13 @@ class DividendDataCollector:
                     avg_yield = ticker_obj.info.get('fiveYearAvgDividendYield', 0)
                     if avg_yield:
                         result.loc[result['Symbol'] == ticker_symbol, 'fiveYearAvgDivdendYield'] = round(avg_yield / 100, 4)
-                except:
-                    pass
-
-                # Get Sector and Industry
+                except Exception as e:
+                    failures.append((ticker_symbol, 'fiveYearAvg', str(e)[:100]))
                 try:
                     result.loc[result['Symbol'] == ticker_symbol, 'Sector'] = ticker_obj.info.get('sector', '')
                     result.loc[result['Symbol'] == ticker_symbol, 'Industry'] = ticker_obj.info.get('industry', '')
-                except:
-                    pass
+                except Exception as e:
+                    failures.append((ticker_symbol, 'sector_industry', str(e)[:100]))
 
                 # Get financial metrics (FCF/Dividend Ratio, Debt-to-Equity, ROE)
                 try:
@@ -911,8 +912,8 @@ class DividendDataCollector:
                     eps_growth = ticker_obj.info.get('earningsGrowth', 0)
                     if eps_growth:
                         result.loc[result['Symbol'] == ticker_symbol, 'EPS_Growth'] = round(eps_growth, 4)
-                except:
-                    pass
+                except Exception as e:
+                    failures.append((ticker_symbol, 'financial_metrics', str(e)[:100]))
 
                 # Calculate rolling metrics from 11-year history
                 try:
@@ -955,15 +956,22 @@ class DividendDataCollector:
                             result.loc[result['Symbol'] == ticker_symbol, 'Trainling_10Y_max_dividend_yield'] = hist_df['T10Y_max'].iloc[-1] if not pd.isna(hist_df['T10Y_max'].iloc[-1]) else 0.0
 
                 except Exception as e:
-                    # Handle delisted stocks, 404 errors
-                    if "404" in str(e) or "delisted" in str(e).lower():
-                        pass  # Silently skip delisted stocks
-                    else:
-                        pass  # Skip other errors
+                    failures.append((ticker_symbol, 'rolling_metrics', str(e)[:100]))
 
             except Exception as e:
-                # Skip errors for individual stocks
+                failures.append((ticker_symbol, 'ticker_init', str(e)[:100]))
                 continue
+
+        # Report enrichment failures
+        if failures:
+            fail_df = pd.DataFrame(failures, columns=['Symbol', 'stage', 'reason'])
+            fail_path = os.path.join(self.data_dir, 'enrichment_failures.csv')
+            fail_df.to_csv(fail_path, index=False)
+            stage_counts = fail_df['stage'].value_counts().to_dict()
+            print(f"⚠ Enrichment failures: {len(failures)} total — {stage_counts}")
+            print(f"  Saved to {fail_path}")
+        else:
+            print(f"✓ Enrichment complete — no failures")
 
         print(f"✓ Enrichment complete")
         return result
