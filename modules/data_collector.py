@@ -1020,20 +1020,27 @@ class DividendDataCollector:
         result = df.copy()
 
         # Ensure numeric types for yield columns
-        result['fiveYearAvgDivdendYield'] = pd.to_numeric(result['fiveYearAvgDivdendYield'], errors='coerce').fillna(0)
-        result['Trainling_10Y_avg_dividend_yield'] = pd.to_numeric(result['Trainling_10Y_avg_dividend_yield'], errors='coerce').fillna(0)
+        result['fiveYearAvgDivdendYield'] = pd.to_numeric(result['fiveYearAvgDivdendYield'], errors='coerce')
+        result['Trainling_5Y_avg_dividend_yield'] = pd.to_numeric(result['Trainling_5Y_avg_dividend_yield'], errors='coerce')
+        result['Trainling_10Y_avg_dividend_yield'] = pd.to_numeric(result['Trainling_10Y_avg_dividend_yield'], errors='coerce')
 
-        # Calculate yield differences (avoid division by zero)
-        result['Five_y_DividendYield_diff'] = result.apply(
-            lambda row: (row['Div. Yield'] - row['fiveYearAvgDivdendYield']) / row['fiveYearAvgDivdendYield']
-            if row['fiveYearAvgDivdendYield'] > 0 else 0,
-            axis=1
-        )
-        result['Ten_y_DividendYield_diff'] = result.apply(
-            lambda row: (row['Div. Yield'] - row['Trainling_10Y_avg_dividend_yield']) / row['Trainling_10Y_avg_dividend_yield']
-            if row['Trainling_10Y_avg_dividend_yield'] > 0 else 0,
-            axis=1
-        )
+        # 5Y comparison: prefer info's fiveYearAvg, fall back to our rolling 5Y avg
+        def _calc_5y_diff(row):
+            avg = row['fiveYearAvgDivdendYield']
+            if pd.isna(avg) or avg <= 0:
+                avg = row.get('Trainling_5Y_avg_dividend_yield', 0)
+            if pd.isna(avg) or avg <= 0:
+                return np.nan  # Cannot compare -> NaN (bypass filter)
+            return (row['Div. Yield'] - avg) / avg
+
+        def _calc_10y_diff(row):
+            avg = row.get('Trainling_10Y_avg_dividend_yield', 0)
+            if pd.isna(avg) or avg <= 0:
+                return np.nan
+            return (row['Div. Yield'] - avg) / avg
+
+        result['Five_y_DividendYield_diff'] = result.apply(_calc_5y_diff, axis=1)
+        result['Ten_y_DividendYield_diff'] = result.apply(_calc_10y_diff, axis=1)
 
         if 'Category' in result.columns:
             premium_mask = result['Category'] != 'Others'
@@ -1042,7 +1049,10 @@ class DividendDataCollector:
 
             regular_stocks = regular_stocks[
                 (regular_stocks['Five_y_DividendYield_diff'] >= 0) |
-                (regular_stocks['Ten_y_DividendYield_diff'] >= 0)
+                (regular_stocks['Ten_y_DividendYield_diff'] >= 0) |
+                # Bypass filter if both bands are missing
+                (regular_stocks['Five_y_DividendYield_diff'].isna() &
+                 regular_stocks['Ten_y_DividendYield_diff'].isna())
             ]
 
             result = pd.concat([premium_stocks, regular_stocks], ignore_index=True)
@@ -1051,7 +1061,9 @@ class DividendDataCollector:
         else:
             result = result[
                 (result['Five_y_DividendYield_diff'] >= 0) |
-                (result['Ten_y_DividendYield_diff'] >= 0)
+                (result['Ten_y_DividendYield_diff'] >= 0) |
+                (result['Five_y_DividendYield_diff'].isna() &
+                 result['Ten_y_DividendYield_diff'].isna())
             ]
 
         print(f"✓ Applied yield comparison filter: {len(result)} stocks remaining")
