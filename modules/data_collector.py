@@ -511,6 +511,13 @@ class DividendDataCollector:
         """
         options = webdriver.ChromeOptions()
 
+        # Don't wait for every subresource (ads/trackers) to finish loading —
+        # only for DOM interactive. The explicit WebDriverWait for #main-table
+        # right after driver.get() handles waiting for the actual content.
+        # Without this, a slow/hanging third-party resource can block driver.get()
+        # past the WebDriver client's read timeout.
+        options.page_load_strategy = 'eager'
+
         # Always run in headless mode (user requirement)
         options.add_argument('--headless')
         options.add_argument('--no-sandbox')
@@ -577,7 +584,13 @@ class DividendDataCollector:
             # Navigate to StockAnalysis.com screener
             print(f"Accessing {AppConfig.STOCKANALYSIS_URL}")
             sys.stdout.flush()
-            driver.get(AppConfig.STOCKANALYSIS_URL)
+            try:
+                driver.get(AppConfig.STOCKANALYSIS_URL)
+            except Exception as e:
+                print(f"  ⚠ Initial page load failed, retrying once... ({e})")
+                sys.stdout.flush()
+                time.sleep(3)
+                driver.get(AppConfig.STOCKANALYSIS_URL)
 
             # Wait for page to fully load (wait for table to appear)
             try:
