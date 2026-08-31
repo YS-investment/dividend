@@ -863,12 +863,14 @@ class DividendDataCollector:
             'FCF_Dividend_Ratio',
             'Debt_to_Equity',
             'ROE',
-            'EPS_Growth'
+            'EPS_Growth',
+            'Revenue_Growth',
+            'Trailing_EPS'
         ]
         for col in yf_columns:
             if col in ('Sector', 'Industry'):
                 result[col] = ''
-            elif col in ['FCF_Dividend_Ratio', 'Debt_to_Equity', 'ROE', 'EPS_Growth']:
+            elif col in ['FCF_Dividend_Ratio', 'Debt_to_Equity', 'ROE', 'EPS_Growth', 'Revenue_Growth', 'Trailing_EPS']:
                 result[col] = np.nan
             else:
                 # Initialize bands and fiveYearAvg with NaN to distinguish from 0
@@ -951,6 +953,21 @@ class DividendDataCollector:
                     eps_growth = ticker_obj.info.get('earningsGrowth', 0)
                     if eps_growth:
                         result.loc[result['Symbol'] == ticker_symbol, 'EPS_Growth'] = round(eps_growth, 4)
+
+                    # Trailing YoY revenue growth (decimal) - same scale/pattern as
+                    # EPS_Growth. Used both as a scoring input and to gate out
+                    # stocks with a declining revenue base in filter_stocks().
+                    revenue_growth = ticker_obj.info.get('revenueGrowth', 0)
+                    if revenue_growth:
+                        result.loc[result['Symbol'] == ticker_symbol, 'Revenue_Growth'] = round(revenue_growth, 4)
+
+                    # Trailing twelve-month EPS - a net-loss proxy used to gate out
+                    # currently unprofitable stocks in filter_stocks(). Checked with
+                    # `is not None` (not truthy) since a real $0.00 EPS is a valid
+                    # reading, not a "missing data" sentinel.
+                    trailing_eps = ticker_obj.info.get('trailingEps')
+                    if trailing_eps is not None:
+                        result.loc[result['Symbol'] == ticker_symbol, 'Trailing_EPS'] = round(trailing_eps, 4)
                 except Exception as e:
                     failures.append((ticker_symbol, 'financial_metrics', str(e)[:100]))
 

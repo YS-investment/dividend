@@ -120,10 +120,10 @@ else:
 st.subheader("⚖️ Customize Scoring Weights")
 st.markdown("Adjust weights to prioritize different metrics (must sum to 1.0)")
 
-col1, col2, col3, col4 = st.columns(4)
+col1, col2, col3, col4, col5 = st.columns(5)
 
 with col1:
-    w_yield = st.number_input("Dividend Yield", min_value=0.0, max_value=1.0, value=0.35, step=0.05)
+    w_yield = st.number_input("Dividend Yield", min_value=0.0, max_value=1.0, value=0.25, step=0.05)
     w_payout = st.number_input("Payout Ratio", min_value=0.0, max_value=1.0, value=0.10, step=0.05)
 with col2:
     w_years = st.number_input("Growth Years", min_value=0.0, max_value=1.0, value=0.10, step=0.05)
@@ -136,9 +136,14 @@ with col4:
                              help="FCF / Dividends paid - higher means more room to cover the dividend")
     w_debt = st.number_input("Debt/Equity", min_value=0.0, max_value=1.0, value=0.05, step=0.05,
                               help="Lower debt-to-equity scores higher (less leverage risk)")
+with col5:
+    w_revenue_growth = st.number_input("Revenue Growth", min_value=0.0, max_value=1.0, value=0.05, step=0.05,
+                                        help="Trailing YoY revenue growth - rewards a growing sales base")
+    w_roe = st.number_input("ROE", min_value=0.0, max_value=1.0, value=0.05, step=0.05,
+                             help="Return on Equity - rewards capital-efficient businesses")
 
 # Validate weights
-total_weight = w_yield + w_years + w_div_years + w_cagr + w_growth + w_payout + w_fcf + w_debt
+total_weight = w_yield + w_years + w_div_years + w_cagr + w_growth + w_payout + w_fcf + w_debt + w_revenue_growth + w_roe
 if abs(total_weight - 1.0) > 0.01:
     st.warning(f"⚠️ Weights sum to {total_weight:.2f}. Please adjust to 1.0")
     st.stop()
@@ -172,7 +177,9 @@ if len(filtered_df) > 0:
         'growth': w_growth,
         'payout': w_payout,
         'fcf_coverage': w_fcf,
-        'debt': w_debt
+        'debt': w_debt,
+        'revenue_growth': w_revenue_growth,
+        'roe': w_roe
     }
 
     filtered_df = calculate_normalized_metrics(filtered_df)
@@ -202,7 +209,7 @@ if len(filtered_df) > 0:
 
     # Column selector
     all_columns = filtered_df.columns.tolist()
-    default_columns = ['Symbol', 'Alert', 'Company Name', 'Category', 'Sector', 'Market Cap', 'mkt_cap_tier', 'Div. Yield', 'Payout Ratio', 'FCF_Dividend_Ratio', 'Debt_to_Equity', 'Div. Gr. Years', 'Div. Years', 'Div. Growth 5Y', 'high_div_composite']
+    default_columns = ['Symbol', 'Alert', 'Company Name', 'Category', 'Sector', 'Market Cap', 'mkt_cap_tier', 'Div. Yield', 'Payout Ratio', 'FCF_Dividend_Ratio', 'Debt_to_Equity', 'Revenue_Growth', 'ROE', 'Div. Gr. Years', 'Div. Years', 'Div. Growth 5Y', 'high_div_composite']
     available_default = [col for col in default_columns if col in all_columns]
 
     display_columns = st.multiselect(
@@ -221,7 +228,7 @@ if len(filtered_df) > 0:
         display_df = sorted_df[display_columns].head(50).copy()
 
         # Format percentage columns
-        pct_cols = ['Div. Yield', 'Payout Ratio', 'Div. Growth', 'Div. Growth 5Y']
+        pct_cols = ['Div. Yield', 'Payout Ratio', 'Div. Growth', 'Div. Growth 5Y', 'Revenue_Growth']
         for col in pct_cols:
             if col in display_df.columns:
                 display_df[col] = (display_df[col] * 100).round(2).astype(str) + '%'

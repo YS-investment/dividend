@@ -124,6 +124,16 @@ def filter_stocks(
     if 'Div. Growth 5Y' in filtered.columns:
         filtered = filtered[filtered['Div. Growth 5Y'] >= min_growth_5y]
 
+    # Pass/fail fundamentals: exclude stocks with a structural profitability or
+    # growth defect that no dividend metric should be able to outweigh. Missing
+    # yfinance data (NaN) is treated as "unknown", not a failure - only an
+    # explicit reading of net loss or revenue decline disqualifies a stock.
+    if 'Trailing_EPS' in filtered.columns:
+        filtered = filtered[~(filtered['Trailing_EPS'] <= 0)]
+
+    if 'Revenue_Growth' in filtered.columns:
+        filtered = filtered[~(filtered['Revenue_Growth'] < 0)]
+
     # Sector filter
     if sectors and len(sectors) > 0 and 'Sector' in filtered.columns:
         filtered = filtered[filtered['Sector'].isin(sectors)]
@@ -180,6 +190,18 @@ def calculate_normalized_metrics(df: pd.DataFrame) -> pd.DataFrame:
             result['Debt_to_Equity'], invert=True
         )
 
+    # Revenue growth - higher is better; NaN means yfinance had no data
+    if 'Revenue_Growth' in result.columns:
+        result['norm_revenue_growth'] = normalize_with_missing_and_outliers(
+            result['Revenue_Growth']
+        )
+
+    # Return on Equity - higher is better; NaN means yfinance had no data
+    if 'ROE' in result.columns:
+        result['norm_roe'] = normalize_with_missing_and_outliers(
+            result['ROE']
+        )
+
     return result
 
 
@@ -227,7 +249,9 @@ def calculate_composite_score(
         weights.get('growth', 0) * result.get('norm_div_growth', 0) +
         weights.get('payout', 0) * result.get('norm_payout', 0) +
         weights.get('fcf_coverage', 0) * result.get('norm_fcf_coverage', 0) +
-        weights.get('debt', 0) * result.get('norm_debt', 0)
+        weights.get('debt', 0) * result.get('norm_debt', 0) +
+        weights.get('revenue_growth', 0) * result.get('norm_revenue_growth', 0) +
+        weights.get('roe', 0) * result.get('norm_roe', 0)
     )
 
     return result

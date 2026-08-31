@@ -73,28 +73,36 @@ class AppConfig:
     # yield lowered from 0.5 -> 0.35; freed weight plus the existing payout
     # weight is redistributed across sustainability metrics (payout, FCF
     # coverage, debt) so quality/safety signals carry more weight than yield alone.
+    # yield lowered further 0.35 -> 0.25 to fund revenue_growth/roe (0.05 each) -
+    # fundamental business quality signals that dividend metrics alone can't see.
     HIGH_DIV_WEIGHTS = {
-        'yield': 0.35,
+        'yield': 0.25,
         'years': 0.10,
         'div_years': 0.10,
         'cagr': 0.10,
         'growth': 0.10,
         'payout': 0.10,
         'fcf_coverage': 0.10,
-        'debt': 0.05
+        'debt': 0.05,
+        'revenue_growth': 0.05,
+        'roe': 0.05
     }
 
     # Scoring weights (Dividend Growth)
     # payout weight raised 0.10 -> 0.17 (room-to-grow / sustainability signal),
     # funded by lowering yield and 1Y growth, which are secondary to the 5Y
     # CAGR track record for a growth-focused screen.
+    # yield lowered further 0.20 -> 0.10 to fund revenue_growth/roe (0.05 each) -
+    # this screen already deprioritizes current income, so it can afford to.
     DIV_GROWTH_WEIGHTS = {
         'cagr': 0.35,
         'growth': 0.15,
-        'yield': 0.20,
+        'yield': 0.10,
         'years': 0.07,
         'div_years': 0.06,
-        'payout': 0.17
+        'payout': 0.17,
+        'revenue_growth': 0.05,
+        'roe': 0.05
     }
 
     # Cache settings
