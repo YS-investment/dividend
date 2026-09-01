@@ -95,15 +95,16 @@ class DividendDataCollector:
         print("STAGE 2: Data Processing & Filtering")
         print("=" * 60)
 
-        filtered_df = self.process_raw_data_from_df(raw_df)
+        aristocrats_set, kings_set, schd_set = self.load_premium_stock_lists()
+        premium_symbols = aristocrats_set | kings_set | schd_set
+
+        filtered_df = self.process_raw_data_from_df(raw_df, premium_symbols)
         print(f"✓ Applied initial filters: {len(filtered_df)} stocks remaining")
 
         # Stage 2.5: Add Premium Stock Categories
         print("\n" + "=" * 60)
         print("STAGE 2.5: Adding Premium Stock Categories")
         print("=" * 60)
-
-        aristocrats_set, kings_set, schd_set = self.load_premium_stock_lists()
 
         filtered_df = self.add_missing_premium_stocks(
             filtered_df, aristocrats_set, kings_set, schd_set
@@ -155,46 +156,57 @@ class DividendDataCollector:
 
         return final_df
 
-    def process_raw_data_from_df(self, df: pd.DataFrame) -> pd.DataFrame:
+    def process_raw_data_from_df(self, df: pd.DataFrame, premium_symbols: set = None) -> pd.DataFrame:
         """
         Process raw DataFrame (alternative to process_raw_data that takes a file path)
 
         Args:
             df: Raw DataFrame
+            premium_symbols: Optional pre-loaded set of upper-cased Aristocrats/Kings/SCHD
+                              tickers, so callers that already loaded the lists (e.g.
+                              update_all_data) don't re-read the CSVs. Loaded internally
+                              if not provided.
 
         Returns:
             Processed DataFrame
         """
+        if premium_symbols is None:
+            aristocrats_set, kings_set, schd_set = self.load_premium_stock_lists()
+            premium_symbols = aristocrats_set | kings_set | schd_set
+
         # Data preprocessing
         df = self.convert_percentage_columns(df)
         df = self.convert_numeric_columns(df)
-        df = self.apply_initial_filters(df)
+        df = self.apply_initial_filters(df, premium_symbols)
 
         # Apply 5-criteria filtering from notebook
-        df = self.apply_dividend_criteria_filters(df)
+        df = self.apply_dividend_criteria_filters(df, premium_symbols)
 
         return df
 
-    def apply_dividend_criteria_filters(self, df: pd.DataFrame) -> pd.DataFrame:
+    def apply_dividend_criteria_filters(self, df: pd.DataFrame, premium_symbols: set = None) -> pd.DataFrame:
         """
         Apply the 5 dividend quality criteria filters
         Premium stocks (Aristocrats/Kings/SCHD) bypass these filters
 
         Args:
             df: Input DataFrame
+            premium_symbols: Optional pre-loaded set of upper-cased premium tickers.
+                              Loaded internally if not provided.
 
         Returns:
             Filtered DataFrame
         """
         result = df.copy()
 
-        aristocrats_set, kings_set, schd_set = self.load_premium_stock_lists()
-        all_premium_stocks = aristocrats_set | kings_set | schd_set
-
         if 'Symbol' not in result.columns:
             return result
 
-        premium_mask = result['Symbol'].str.upper().isin(all_premium_stocks)
+        if premium_symbols is None:
+            aristocrats_set, kings_set, schd_set = self.load_premium_stock_lists()
+            premium_symbols = aristocrats_set | kings_set | schd_set
+
+        premium_mask = result['Symbol'].str.upper().isin(premium_symbols)
         premium_stocks = result[premium_mask].copy()
         regular_stocks = result[~premium_mask].copy()
 
@@ -426,24 +438,37 @@ class DividendDataCollector:
 
         return result
 
-    def apply_initial_filters(self, df: pd.DataFrame) -> pd.DataFrame:
+    def apply_initial_filters(self, df: pd.DataFrame, premium_symbols: set = None) -> pd.DataFrame:
         """
         Apply initial data quality filters
+        Premium stocks (Aristocrats/Kings/SCHD) bypass the yield check - a
+        scraping glitch reporting a missing/zero yield shouldn't strip their
+        real scraped row before Stage 2.5 can categorize and enrich them.
 
         Args:
             df: Input DataFrame
+            premium_symbols: Optional pre-loaded set of upper-cased premium tickers.
+                              Loaded internally if not provided.
 
         Returns:
             Filtered DataFrame
         """
         result = df.copy()
 
-        # Remove rows with missing dividend yield
-        if 'Div. Yield' in result.columns:
-            result = result[result['Div. Yield'].notna()]
-            result = result[result['Div. Yield'] > 0]
+        if 'Div. Yield' not in result.columns:
+            return result
 
-        return result
+        # Remove rows with missing dividend yield
+        valid_yield_mask = result['Div. Yield'].notna() & (result['Div. Yield'] > 0)
+
+        if 'Symbol' in result.columns:
+            if premium_symbols is None:
+                aristocrats_set, kings_set, schd_set = self.load_premium_stock_lists()
+                premium_symbols = aristocrats_set | kings_set | schd_set
+            premium_mask = result['Symbol'].str.upper().isin(premium_symbols)
+            return result[premium_mask | valid_yield_mask]
+
+        return result[valid_yield_mask]
 
     def _dismiss_overlays(self, driver):
         """Remove iframe overlays and dismiss popups that block clicks."""
