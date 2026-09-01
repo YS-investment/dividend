@@ -7,6 +7,7 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 from utils.cache_manager import load_main_dataframe, load_historical_prices
+from modules.data_processor import add_market_cap_tier
 from modules.visualization import (
     create_price_chart_with_ema,
     create_yield_chart_with_stats,
@@ -24,6 +25,9 @@ df = load_main_dataframe(use_cached=True)
 if df is None:
     st.error("No data available. Please return to home page and load data.")
     st.stop()
+
+# Add market cap tier column (same classification used by the screeners)
+df = add_market_cap_tier(df)
 
 # Stock selector
 st.subheader("Select Stock")
@@ -53,7 +57,7 @@ st.divider()
 # Display key metrics
 st.subheader(f"{selected_symbol} - {stock_data.get('Company Name', 'N/A')}")
 
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 
 with col1:
     st.metric("Dividend Yield", f"{stock_data.get('Div. Yield', 0) * 100:.2f}%")
@@ -61,21 +65,30 @@ with col1:
 
 with col2:
     st.metric("Payout Ratio", f"{stock_data.get('Payout Ratio', 0) * 100:.1f}%")
-    st.metric("Dividend Years", f"{int(stock_data.get('Div. Gr. Years', 0))}")
+    st.metric("Dividend Growth Years", f"{int(stock_data.get('Div. Gr. Years', 0))}")
 
 with col3:
+    st.metric("Dividend Payment Years", f"{int(stock_data.get('Div. Years', 0))}")
     st.metric("1Y Growth", f"{stock_data.get('Div. Growth', 0) * 100:.2f}%")
+
+with col4:
     st.metric("5Y CAGR", f"{stock_data.get('Div. Growth 5Y', 0) * 100:.2f}%")
+    st.metric(
+        "Market Cap Tier",
+        stock_data.get('mkt_cap_tier', 'N/A'),
+        help="Russell Index style tier: Mega ($200B+) / Large ($10-200B) / Mid ($2-10B) / Small ($300M-2B) / Micro ($50-300M) / Nano (<$50M)"
+    )
 
 # Financial Health Metrics
 st.markdown("---")
 st.subheader("Financial Health Metrics")
+st.caption("These are the same fundamentals fed into the dividend screeners' filters and composite score.")
 
-col4, col5, col6 = st.columns(3)
+col5, col6, col7, col8, col9 = st.columns(5)
 
-with col4:
-    fcf_ratio = stock_data.get('FCF_Dividend_Ratio', 0)
-    if fcf_ratio > 0:
+with col5:
+    fcf_ratio = stock_data.get('FCF_Dividend_Ratio')
+    if pd.notna(fcf_ratio):
         st.metric(
             "FCF/Dividend Ratio",
             f"{fcf_ratio:.2f}x",
@@ -84,9 +97,9 @@ with col4:
     else:
         st.metric("FCF/Dividend Ratio", "N/A", help="Data not available")
 
-with col5:
-    debt_to_equity = stock_data.get('Debt_to_Equity', 0)
-    if debt_to_equity >= 0:
+with col6:
+    debt_to_equity = stock_data.get('Debt_to_Equity')
+    if pd.notna(debt_to_equity):
         st.metric(
             "Debt-to-Equity (D/E)",
             f"{debt_to_equity:.2f}",
@@ -95,9 +108,9 @@ with col5:
     else:
         st.metric("Debt-to-Equity (D/E)", "N/A", help="Data not available")
 
-with col6:
-    roe = stock_data.get('ROE', 0)
-    if roe != 0:
+with col7:
+    roe = stock_data.get('ROE')
+    if pd.notna(roe):
         st.metric(
             "ROE",
             f"{roe:.2f}%",
@@ -105,6 +118,28 @@ with col6:
         )
     else:
         st.metric("ROE", "N/A", help="Data not available")
+
+with col8:
+    revenue_growth = stock_data.get('Revenue_Growth')
+    if pd.notna(revenue_growth):
+        st.metric(
+            "Revenue Growth (YoY)",
+            f"{revenue_growth * 100:.2f}%",
+            help="Trailing year-over-year revenue growth. Used both as a scoring input and to filter out stocks with a declining revenue base."
+        )
+    else:
+        st.metric("Revenue Growth (YoY)", "N/A", help="Data not available")
+
+with col9:
+    trailing_eps = stock_data.get('Trailing_EPS')
+    if pd.notna(trailing_eps):
+        st.metric(
+            "Trailing EPS",
+            f"${trailing_eps:.2f}",
+            help="Trailing twelve-month earnings per share. Not used in scoring - only to filter out net-loss companies (EPS <= 0)."
+        )
+    else:
+        st.metric("Trailing EPS", "N/A", help="Data not available")
 
 st.divider()
 
