@@ -79,6 +79,8 @@ def filter_stocks(
     min_div_years: int = AppConfig.DEFAULT_MIN_DIV_YEARS,
     min_growth: float = AppConfig.DEFAULT_MIN_GROWTH,
     min_growth_5y: float = AppConfig.DEFAULT_MIN_GROWTH_5Y,
+    max_debt_equity: float = AppConfig.DEFAULT_MAX_DEBT_TO_EQUITY,
+    min_roe: float = AppConfig.DEFAULT_MIN_ROE,
     sectors: list = None,
     mkt_cap_tiers: list = None
 ) -> pd.DataFrame:
@@ -95,6 +97,8 @@ def filter_stocks(
         min_div_years: Minimum consecutive dividend payment years (default: 5)
         min_growth: Minimum 1-year dividend growth (default: 4%)
         min_growth_5y: Minimum 5-year dividend growth (default: 4%)
+        max_debt_equity: Maximum debt-to-equity, yfinance raw scale (default: 200)
+        min_roe: Minimum return on equity, percentage scale (default: 0%)
         sectors: List of sectors to include (default: None = all)
 
     Returns:
@@ -133,6 +137,15 @@ def filter_stocks(
 
     if 'Revenue_Growth' in filtered.columns:
         filtered = filtered[~(filtered['Revenue_Growth'] < 0)]
+
+    # Additional quality gates (pass/fail, not scored): excessive leverage or
+    # sub-par capital efficiency disqualifies outright. Same NaN-safe pattern
+    # as above - missing yfinance data doesn't fail the stock.
+    if 'Debt_to_Equity' in filtered.columns:
+        filtered = filtered[~(filtered['Debt_to_Equity'] > max_debt_equity)]
+
+    if 'ROE' in filtered.columns:
+        filtered = filtered[~(filtered['ROE'] < min_roe)]
 
     # Sector filter
     if sectors and len(sectors) > 0 and 'Sector' in filtered.columns:

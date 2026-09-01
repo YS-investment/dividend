@@ -69,23 +69,32 @@ class AppConfig:
     # rather than filtered out (see High Dividend Screener Alert column)
     HIGH_YIELD_WARNING_THRESHOLD = 0.10
 
+    # Additional pass/fail quality gates (High Dividend Screener) - see
+    # DEFAULT_MAX_DEBT_TO_EQUITY / DEFAULT_MIN_ROE below and filter_stocks().
+    # Debt_to_Equity is on yfinance's raw scale (100 =~ 1.0x); ROE is a
+    # percentage (15.0 =~ 15%). Missing data (NaN) passes through as
+    # "unknown" rather than failing, same as the EPS/Revenue_Growth gates.
+    DEFAULT_MAX_DEBT_TO_EQUITY = 200.0
+    DEFAULT_MIN_ROE = 0.0
+
     # Scoring weights (High Dividend)
-    # yield lowered from 0.5 -> 0.35; freed weight plus the existing payout
-    # weight is redistributed across sustainability metrics (payout, FCF
-    # coverage, debt) so quality/safety signals carry more weight than yield alone.
-    # yield lowered further 0.35 -> 0.25 to fund revenue_growth/roe (0.05 each) -
-    # fundamental business quality signals that dividend metrics alone can't see.
+    # Redesigned from a 10-factor weighted blend to a 3-factor composite:
+    # spreading weight across 10 metrics diluted differentiation (a stock
+    # mediocre on everything could outscore one excellent on the metrics
+    # that actually matter for "high quality high yield"). Years, payout,
+    # 1Y growth, debt, revenue growth, and ROE are now pass/fail gates
+    # (sidebar filters in the screener page) instead of scored inputs -
+    # mirroring how SCHD's underlying index (Dow Jones US Dividend 100)
+    # screens on eligibility first and ranks survivors on just 4 factors,
+    # and how the "Chowder Rule" treats payout ratio as a pre-screen rather
+    # than part of the score. Payout ratio in particular is dropped from
+    # scoring because it's a GAAP/net-income metric that's structurally
+    # distorted for REITs/utilities (high non-cash depreciation) -
+    # fcf_coverage (cash-flow based) carries that signal more reliably.
     HIGH_DIV_WEIGHTS = {
-        'yield': 0.25,
-        'years': 0.10,
-        'div_years': 0.10,
-        'cagr': 0.10,
-        'growth': 0.10,
-        'payout': 0.10,
-        'fcf_coverage': 0.10,
-        'debt': 0.05,
-        'revenue_growth': 0.05,
-        'roe': 0.05
+        'yield': 0.50,
+        'cagr': 0.25,
+        'fcf_coverage': 0.25
     }
 
     # Scoring weights (Dividend Growth)
