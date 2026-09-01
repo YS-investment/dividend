@@ -98,20 +98,20 @@ class AppConfig:
     }
 
     # Scoring weights (Dividend Growth)
-    # payout weight raised 0.10 -> 0.17 (room-to-grow / sustainability signal),
-    # funded by lowering yield and 1Y growth, which are secondary to the 5Y
-    # CAGR track record for a growth-focused screen.
-    # yield lowered further 0.20 -> 0.10 to fund revenue_growth/roe (0.05 each) -
-    # this screen already deprioritizes current income, so it can afford to.
+    # Redesigned from an 8-factor weighted blend to a 2-factor composite,
+    # mirroring the Chowder Rule - the industry-standard dividend-growth
+    # heuristic (yield + 5Y dividend growth CAGR, summed) - and real index
+    # methodologies (S&P Dividend Growers Index / VIG, Nasdaq Dividend
+    # Achievers) which don't score payout/years/ROE/revenue growth at all,
+    # only screen on them. Growth years, payment years, 1Y growth, payout
+    # ratio, debt-to-equity, ROE, and revenue growth are now pass/fail
+    # gates (sidebar filters) instead of scored inputs, same rationale as
+    # HIGH_DIV_WEIGHTS. cagr is weighted above yield (60/40 rather than the
+    # Chowder Rule's even split) to preserve this screener's growth-first
+    # identity relative to the High Dividend Screener.
     DIV_GROWTH_WEIGHTS = {
-        'cagr': 0.35,
-        'growth': 0.15,
-        'yield': 0.10,
-        'years': 0.07,
-        'div_years': 0.06,
-        'payout': 0.17,
-        'revenue_growth': 0.05,
-        'roe': 0.05
+        'cagr': 0.60,
+        'yield': 0.40
     }
 
     # Cache settings

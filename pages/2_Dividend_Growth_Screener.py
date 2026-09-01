@@ -90,6 +90,29 @@ min_growth_5y = st.sidebar.slider(
     step=0.5
 )
 
+max_debt_equity = st.sidebar.slider(
+    "Maximum Debt-to-Equity",
+    min_value=0.0,
+    max_value=500.0,
+    value=200.0,
+    step=10.0,
+    help="Pass/fail quality gate - excludes over-leveraged stocks. Raw yfinance scale (100 ≈ 1.0x). Missing data passes through."
+)
+
+min_roe = st.sidebar.slider(
+    "Minimum ROE (%)",
+    min_value=-50.0,
+    max_value=50.0,
+    value=8.0,  # Higher than High Dividend Screener's 0% - growth investing
+    # leans on Buffett/Munger-style capital efficiency as part of the thesis
+    step=1.0,
+    help="Pass/fail quality gate - minimum capital efficiency (higher bar than the High "
+         "Dividend Screener since growth investing weighs capital efficiency more heavily). "
+         "Missing data passes through. Negative ROE also passes through unfiltered - it "
+         "almost always signals negative shareholders' equity from buybacks (e.g. Philip "
+         "Morris), not real unprofitability."
+)
+
 # Sector filter
 if 'Sector' in df.columns:
     available_sectors = sorted(df['Sector'].dropna().unique().tolist())
@@ -116,28 +139,23 @@ else:
 # Main content - Scoring Weights (Growth-focused)
 st.subheader("⚖️ Customize Scoring Weights")
 st.markdown("Weights are optimized for growth focus (must sum to 1.0)")
+st.caption(
+    "Only these 2 metrics are scored/ranked, mirroring the Chowder Rule (yield + 5Y growth). "
+    "Dividend Gr. Years, Payment Years, 1Y Growth, Payout Ratio, Debt-to-Equity, ROE, and "
+    "Revenue Growth are applied as pass/fail filters in the sidebar instead - a stock either "
+    "qualifies as a quality growth stock or it doesn't, so no dividend metric can outweigh a "
+    "fundamentals red flag."
+)
 
-col1, col2, col3, col4, col5, col6 = st.columns(6)
+col1, col2 = st.columns(2)
 
 with col1:
-    w_cagr = st.number_input("5Y CAGR", min_value=0.0, max_value=1.0, value=0.35, step=0.05)
+    w_cagr = st.number_input("5Y CAGR", min_value=0.0, max_value=1.0, value=0.60, step=0.05)
 with col2:
-    w_yield = st.number_input("Dividend Yield", min_value=0.0, max_value=1.0, value=0.10, step=0.05)
-with col3:
-    w_growth = st.number_input("1Y Growth", min_value=0.0, max_value=1.0, value=0.15, step=0.05)
-with col4:
-    w_years = st.number_input("Growth Years", min_value=0.0, max_value=1.0, value=0.07, step=0.01)
-    w_div_years = st.number_input("Payment Years", min_value=0.0, max_value=1.0, value=0.06, step=0.01)
-with col5:
-    w_payout = st.number_input("Payout Ratio", min_value=0.0, max_value=1.0, value=0.17, step=0.05)
-with col6:
-    w_revenue_growth = st.number_input("Revenue Growth", min_value=0.0, max_value=1.0, value=0.05, step=0.05,
-                                        help="Trailing YoY revenue growth - rewards a growing sales base")
-    w_roe = st.number_input("ROE", min_value=0.0, max_value=1.0, value=0.05, step=0.05,
-                             help="Return on Equity - rewards capital-efficient businesses")
+    w_yield = st.number_input("Dividend Yield", min_value=0.0, max_value=1.0, value=0.40, step=0.05)
 
 # Validate weights
-total_weight = w_yield + w_years + w_div_years + w_cagr + w_growth + w_payout + w_revenue_growth + w_roe
+total_weight = w_cagr + w_yield
 if abs(total_weight - 1.0) > 0.01:
     st.warning(f"⚠️ Weights sum to {total_weight:.2f}. Please adjust to 1.0")
     st.stop()
@@ -154,6 +172,8 @@ filtered_df = filter_stocks(
     min_div_years=min_div_years,
     min_growth=min_growth / 100,
     min_growth_5y=min_growth_5y / 100,
+    max_debt_equity=max_debt_equity,
+    min_roe=min_roe,
     sectors=selected_sectors if selected_sectors else None,
     mkt_cap_tiers=selected_tiers if selected_tiers else None
 )
@@ -163,14 +183,8 @@ st.divider()
 # Calculate scores
 if len(filtered_df) > 0:
     weights = {
-        'yield': w_yield,
-        'years': w_years,
-        'div_years': w_div_years,
         'cagr': w_cagr,
-        'growth': w_growth,
-        'payout': w_payout,
-        'revenue_growth': w_revenue_growth,
-        'roe': w_roe
+        'yield': w_yield
     }
 
     filtered_df = calculate_normalized_metrics(filtered_df)
