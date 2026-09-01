@@ -107,7 +107,9 @@ min_roe = st.sidebar.slider(
     max_value=50.0,
     value=0.0,
     step=1.0,
-    help="Pass/fail quality gate - minimum capital efficiency. Missing data passes through."
+    help="Pass/fail quality gate - minimum capital efficiency. Missing data passes through. "
+         "Negative ROE also passes through unfiltered - it almost always signals negative "
+         "shareholders' equity from buybacks (e.g. Philip Morris), not real unprofitability."
 )
 
 # Sector filter (if available)

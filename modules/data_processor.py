@@ -98,7 +98,9 @@ def filter_stocks(
         min_growth: Minimum 1-year dividend growth (default: 4%)
         min_growth_5y: Minimum 5-year dividend growth (default: 4%)
         max_debt_equity: Maximum debt-to-equity, yfinance raw scale (default: 200)
-        min_roe: Minimum return on equity, percentage scale (default: 0%)
+        min_roe: Minimum return on equity, percentage scale (default: 0%). Only
+            applied to non-negative ROE readings - negative ROE is treated as
+            an equity-distortion artifact, not a failure (see filter body).
         sectors: List of sectors to include (default: None = all)
 
     Returns:
@@ -145,7 +147,18 @@ def filter_stocks(
         filtered = filtered[~(filtered['Debt_to_Equity'] > max_debt_equity)]
 
     if 'ROE' in filtered.columns:
-        filtered = filtered[~(filtered['ROE'] < min_roe)]
+        # By this point Trailing_EPS <= 0 has already been filtered out above,
+        # so a *negative* ROE among survivors can't reflect genuine
+        # capital inefficiency with positive equity (positive earnings /
+        # positive equity can't be negative) - it almost always means
+        # shareholders' equity itself is negative (heavy buybacks/debt),
+        # which mechanically breaks the ratio rather than signaling a bad
+        # business. Philip Morris International is a well-known example:
+        # negative equity from buybacks puts its ROE around -60% while its
+        # dividend is comfortably covered by EPS/FCF. Only a *measurable*
+        # (non-negative) ROE below the floor is treated as a real quality
+        # miss; negative ROE is treated as "unknown" like other missing data.
+        filtered = filtered[~((filtered['ROE'] >= 0) & (filtered['ROE'] < min_roe))]
 
     # Sector filter
     if sectors and len(sectors) > 0 and 'Sector' in filtered.columns:
