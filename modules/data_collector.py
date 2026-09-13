@@ -543,8 +543,10 @@ class DividendDataCollector:
         # past the WebDriver client's read timeout.
         options.page_load_strategy = 'eager'
 
-        # Always run in headless mode (user requirement)
-        options.add_argument('--headless')
+        # Always run in headless mode (user requirement). "new" headless renders
+        # much closer to a real browser than the legacy "--headless" mode, which
+        # is more readily fingerprinted by bot-detection.
+        options.add_argument('--headless=new')
         options.add_argument('--no-sandbox')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-gpu')
@@ -553,8 +555,17 @@ class DividendDataCollector:
         options.add_argument('--disable-software-rasterizer')
         options.add_argument('--disable-extensions')
 
-        # User agent to avoid blocking
-        options.add_argument('--user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36')
+        # Don't force a User-Agent string here: a hardcoded version drifts out
+        # of sync with the actual Chrome build over time (e.g. claiming
+        # Chrome/114 while running Chrome/152), and Chrome's Client Hints
+        # headers (Sec-CH-UA) always report the real version regardless of any
+        # --user-agent override — the mismatch itself is a bot-detection signal.
+        # Leaving it unset means Chrome sends its own consistent, matching UA.
+
+        # Reduce automation fingerprints that anti-bot systems check for.
+        options.add_argument('--disable-blink-features=AutomationControlled')
+        options.add_experimental_option('excludeSwitches', ['enable-automation'])
+        options.add_experimental_option('useAutomationExtension', False)
 
         # Resolve Chromium binary path (system install takes priority)
         chromium_bin = (
@@ -577,6 +588,7 @@ class DividendDataCollector:
                 print(f"Using system chromedriver: {chromedriver_path}, browser: {chromium_bin}")
                 service = Service(chromedriver_path)
                 driver = webdriver.Chrome(service=service, options=options)
+                self._hide_webdriver_flag(driver)
                 return driver
             except Exception as e:
                 print(f"System chromedriver failed: {e}")
@@ -585,7 +597,30 @@ class DividendDataCollector:
         print("Using webdriver-manager to install chromedriver")
         service = Service(ChromeDriverManager().install())
         driver = webdriver.Chrome(service=service, options=options)
+        self._hide_webdriver_flag(driver)
         return driver
+
+    @staticmethod
+    def _hide_webdriver_flag(driver):
+        """Mask navigator.webdriver, which Selenium sets to true by default,
+        and strip "Headless" from the User-Agent Chrome reports for itself —
+        both are common, simple signals bot-detection checks for. The version
+        number is left untouched (read from the real UA), so this can't drift
+        out of sync the way a hardcoded UA string does."""
+        try:
+            driver.execute_cdp_cmd('Page.addScriptToEvaluateOnNewDocument', {
+                'source': "Object.defineProperty(navigator, 'webdriver', {get: () => undefined});"
+            })
+        except Exception:
+            pass
+        try:
+            real_ua = driver.execute_script("return navigator.userAgent")
+            if real_ua and 'Headless' in real_ua:
+                driver.execute_cdp_cmd('Network.setUserAgentOverride', {
+                    'userAgent': real_ua.replace('Headless', '')
+                })
+        except Exception:
+            pass
 
     def collect_stockanalysis_data(self, progress_callback: Optional[Callable] = None) -> pd.DataFrame:
         """
@@ -625,6 +660,15 @@ class DividendDataCollector:
                 print("  ✓ Page loaded successfully")
             except Exception as e:
                 print(f"  ⚠ Page load wait timeout, continuing anyway: {e}")
+                # #main-table missing this early usually means the real page
+                # never rendered (bot-detection challenge/block page, etc.)
+                # rather than a normal slow load — log enough to tell the two
+                # apart next time instead of guessing from cascading failures.
+                try:
+                    print(f"  ⚠ Page title at timeout: {driver.title!r}")
+                    print(f"  ⚠ Page source snippet: {driver.page_source[:500]!r}")
+                except Exception:
+                    pass
                 time.sleep(3)
             sys.stdout.flush()
 
