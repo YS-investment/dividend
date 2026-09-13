@@ -3,6 +3,13 @@
 # file, since a scheduled task has no visible console to read afterward.
 
 $RepoRoot = Split-Path -Parent $PSScriptRoot
+
+# Task Scheduler launches this with an unrelated working directory (typically
+# System32), not the project folder - without this, every relative path the
+# pipeline uses (data/final_df2.csv, etc.) resolves to the wrong place and
+# fails immediately.
+Set-Location $RepoRoot
+
 $LogDir = Join-Path $RepoRoot "logs"
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
