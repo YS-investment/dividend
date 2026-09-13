@@ -567,21 +567,31 @@ class DividendDataCollector:
         options.add_experimental_option('excludeSwitches', ['enable-automation'])
         options.add_experimental_option('useAutomationExtension', False)
 
-        # Resolve Chromium binary path (system install takes priority)
-        chromium_bin = (
-            shutil.which('chromium') or
-            shutil.which('chromium-browser') or
-            '/usr/bin/chromium' or
-            '/usr/bin/chromium-browser'
-        )
+        # Resolve Chrome/Chromium binary path (system install takes priority).
+        # Checks PATH first, then common per-OS install locations, so this
+        # works both on the Linux CI runner and a local Windows/Mac dev
+        # machine — a bare hardcoded '/usr/bin/...' path is always truthy
+        # even when it doesn't exist, which silently broke non-Linux runs.
+        binary_candidates = [
+            shutil.which('chromium'),
+            shutil.which('chromium-browser'),
+            shutil.which('google-chrome-stable'),
+            shutil.which('google-chrome'),
+            shutil.which('chrome'),
+            '/usr/bin/chromium',
+            '/usr/bin/chromium-browser',
+            r'C:\Program Files\Google\Chrome\Application\chrome.exe',
+            r'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+        ]
+        chromium_bin = next((p for p in binary_candidates if p and os.path.exists(p)), None)
         if chromium_bin:
             options.binary_location = chromium_bin
 
-        # Resolve chromedriver path (system install takes priority)
-        chromedriver_path = (
-            shutil.which('chromedriver') or
-            '/usr/bin/chromedriver'
-        )
+        # Resolve chromedriver path (system install takes priority). Falls
+        # through to the webdriver-manager branch below when neither exists,
+        # instead of trying a Linux-only path that isn't actually there.
+        chromedriver_candidate = shutil.which('chromedriver') or '/usr/bin/chromedriver'
+        chromedriver_path = chromedriver_candidate if os.path.exists(chromedriver_candidate) else None
 
         if chromedriver_path:
             try:
