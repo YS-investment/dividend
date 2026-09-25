@@ -1,8 +1,10 @@
 name: Daily Dividend Data Update
 
 on:
-  schedule:
-    - cron: '0 22 * * 1-5'  # 10 PM UTC = 6 PM EDT / 5 PM EST, Mon-Fri
+  # Scheduled run disabled: StockAnalysis.com's Cloudflare blocks GitHub Actions IPs.
+  # Data is updated locally via local_update.py (Windows Scheduled Task) instead.
+  # schedule:
+  #   - cron: '0 22 * * 1-5'  # 10 PM UTC = 6 PM EDT / 5 PM EST, Mon-Fri
   workflow_dispatch:          # Manual trigger from GitHub UI
 
 jobs:
