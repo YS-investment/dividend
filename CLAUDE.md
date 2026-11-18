@@ -2,66 +2,107 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**Investing rules live in [docs/investment_criteria.md](docs/investment_criteria.md)** (Korean) — why each threshold exists, sector rules, safety grade, valuation, portfolio and Korean-tax criteria. This file covers code structure only. Numeric thresholds are defined once in [config.py](config.py); when a rule changes, update config first, then the criteria doc.
+
 ## Commands
 
 ```bash
-# Install dependencies
-pip install -r requirements.txt
+# Use the project venv - the global Python lacks selenium and other deps
+.venv/Scripts/python.exe -m pip install -r requirements.txt
 
-# Run the app
-streamlit run app.py
-# Opens at http://localhost:8501
+# Run the app (http://localhost:8501)
+.venv/Scripts/streamlit.exe run app.py
+
+# Full data update (scrape + process + enrich + git commit/push)
+.venv/Scripts/python.exe local_update.py
+
+# Re-process/enrich only, reusing the last raw scrape (~3 min, no Selenium)
+.venv/Scripts/python.exe -c "from modules.data_collector import DividendDataCollector; DividendDataCollector().update_all_data(use_scraping=False)"
 ```
 
-No test suite or linter is configured in this project.
+No test suite or linter is configured. Page smoke test: `streamlit.testing.v1.AppTest.from_file('pages/<page>.py').run()` and check `at.exception`.
 
 ## Architecture
 
-This is a Streamlit multi-page web app for dividend stock screening, analysis, and portfolio backtesting.
+Streamlit multi-page app for dividend stock screening, per-stock analysis, portfolio diagnosis and backtesting.
 
 ### Data flow
 
 ```
-StockAnalysis.com (Selenium scraping)
-    → modules/data_collector.py → data/final_df2.csv + data/last_updated.txt
-                                        ↓
-Yahoo Finance (yfinance API)     utils/cache_manager.py (@st.cache_data, 1h TTL for main df)
-    → per-symbol historical data        ↓
-                                  Streamlit pages (UI)
-                                        ↓
-                              modules/visualization.py (Plotly charts)
+StockAnalysis.com (Selenium) ─┐
+FRED CPI + ^TNX (macro) ──────┼─ modules/data_collector.py ─→ data/final_df2.csv (~380 rows)
+Yahoo Finance (yfinance) ─────┘   (enrichment: modules/dividend_metrics.py)
+                                              │
+                    utils/cache_manager.load_prepared_dataframe()
+                    = final_df2.csv → data_processor.prepare_all_metrics()  (universe-wide)
+                                              │
+              pages: filter_stocks() → calculate_composite_score() / diagnose_portfolio()
 ```
+
+Derived columns (sector group, safety grade, valuation, scores...) are **not stored** in the CSV — they are recomputed by `prepare_all_metrics()` on load. Only raw/enriched fields are persisted.
+
+### Update pipeline — `DividendDataCollector.update_all_data(use_scraping=True)`
+
+Wraps `_run_update_pipeline()`; every run is logged to `data/update_history.csv` and a Telegram alert is sent on failure or when >10% of tickers fail enrichment.
+
+| Stage | What | Method |
+|---|---|---|
+| 0 | Backup data, refresh macro benchmarks (10Y Treasury 3Y MA, 5Y annualized CPI) | `backup_existing_data`, `macro_benchmarks.refresh_macro_benchmarks` |
+| 1 | Scrape (or load raw CSV), validate ≥ `MIN_EXPECTED_STOCKS` (1,000) raw rows | `collect_stockanalysis_data`, `validate_scraped_data` |
+| 2 | Universe filter: yield ≥ 2%, growth streak ≥ 5y, 1Y growth ≥ 3%, 5Y CAGR ≥ CPI. Aristocrats/Kings/SCHD bypass | `process_raw_data_from_df` → `apply_dividend_criteria_filters` |
+| 2.5 | Add missing premium stocks, tag `Category` | `add_missing_premium_stocks`, `categorize_stocks` |
+| 3 | yfinance enrichment (thread pool `YFINANCE_MAX_WORKERS`=5 + sequential retry pass); failures → `data/enrichment_failures.csv` | `enrich_with_yfinance` → `dividend_metrics.compute_ticker_metrics` |
+| 4 | Informational yield-vs-history diff columns (**no filtering**) | `add_yield_comparison_columns` |
+| 5 | Save `final_df2.csv`, stamp `last_updated.txt` (UTC) | — |
 
 ### Key modules
 
-- **[app.py](app.py)** — Home page: data source selection (cached CSV vs live scrape), displays main dataset table.
-- **[config.py](config.py)** — All constants: file paths, scraping XPaths, default filter values, scoring weights, backtest defaults. Central place for tuning. `AppConfig` for app/scraper settings, `BacktestConfig` for backtest defaults. **Gotcha:** `pages/1_High_Dividend_Screener.py` and `pages/2_Dividend_Growth_Screener.py` hardcode their own slider/weight `value=` defaults rather than reading `AppConfig.DEFAULT_*` / `HIGH_DIV_WEIGHTS` / `DIV_GROWTH_WEIGHTS` — when changing a default, update both the config constant (documentation of intent) and the page's widget default (actual behavior).
-- **[modules/data_collector.py](modules/data_collector.py)** — Selenium-based scraper for StockAnalysis.com (`DividendDataCollector`). `update_all_data()` runs the full pipeline in stages: backup existing data → scrape (`collect_stockanalysis_data`) → validate (min 1,000 stocks, `validate_scraped_data`) → filter/process (`process_raw_data_from_df`) → tag Aristocrats/Kings/SCHD categories (`load_premium_stock_lists`, `add_missing_premium_stocks`, `categorize_stocks`) → enrich with yfinance (`enrich_with_yfinance`, adds `FCF_Dividend_Ratio`, `Debt_to_Equity`, `ROE`, `EPS_Growth`, `Revenue_Growth`, `Trailing_EPS` and trailing yield stats) → final yield-comparison filter (`apply_yield_comparison_filter`) → save `final_df2.csv` and stamp `data/last_updated.txt` with the completion time (UTC). **Tip:** `update_all_data(use_scraping=False)` skips Selenium entirely and reuses the existing `dividend_from_stockanalysis.csv` raw scrape, re-running only the processing/enrichment stages — use this to backfill a new yfinance field (like `EPS_Growth` was added) into `final_df2.csv` in a few minutes instead of a full re-scrape.
-- **[modules/data_processor.py](modules/data_processor.py)** — `filter_stocks()` + `calculate_composite_score()`. Score = Σ(min-max normalized metric × user weight) × 100. Before scoring, `filter_stocks()` also applies two pass/fail fundamentals gates that no dividend metric can outweigh: `Trailing_EPS <= 0` (net loss) and `Revenue_Growth < 0` (declining revenue) both disqualify a stock outright; a missing/NaN reading on either column is treated as "unknown" and does not fail the stock. `calculate_normalized_metrics()` normalizes yield/years/CAGR/growth/payout plus `FCF_Dividend_Ratio`, `Debt_to_Equity`, `Revenue_Growth`, and `ROE` via `normalize_with_missing_and_outliers()` — a NaN value in those columns means yfinance had no data (scored neutrally at 0.5), and remaining values are winsorized to the 1st/99th percentile before min-max scaling so one extreme outlier doesn't skew everyone else's score. `add_chowder_number()` adds an informational `chowder_number` column (Div. Yield % + 5Y CAGR %) used only by the Dividend Growth Screener, not in scoring. `add_eps_growth_alert()` adds an informational `EPS_Alert` column flagging stocks where 1Y `Div. Growth` exceeds 1Y `EPS_Growth` (dividend growing faster than earnings — a payout-ratio-expansion red flag); stocks with no EPS data (`EPS_Growth == 0.0`) are not flagged. Neither Chowder Number nor the EPS alert affects filtering or scoring. Also has `categorize_market_cap()` / `add_market_cap_tier()` (Russell-style tiers from the `Market Cap` string column).
-- **[modules/portfolio_backtester.py](modules/portfolio_backtester.py)** — Day-by-day simulation engine (`run_backtest`). Handles DRIP (fractional shares via `_apply_drip`), qualified/ordinary dividend tax and capital gains tax, rebalancing with deviation threshold (`_should_rebalance` / `_rebalance_portfolio`), and computes 12+ performance metrics via `calculate_performance_metrics` (Sharpe, Sortino, alpha/beta, VaR, max drawdown).
-- **[modules/visualization.py](modules/visualization.py)** — Plotly chart builders (bar, scatter/bubble, histogram, gauge, dual-axis, portfolio growth, underwater, tax charts) called from pages.
-- **[utils/cache_manager.py](utils/cache_manager.py)** — `@st.cache_data` wrappers: `load_main_dataframe` (1h TTL), `load_historical_prices` / `load_benchmark_data` (24h TTL, per-symbol yfinance history). `clear_all_caches()` clears both `st.cache_data` and `st.cache_resource`; note `app.py`'s own update flow calls `st.cache_data.clear()` directly rather than this helper.
-- **[utils/data_loader.py](utils/data_loader.py)** — `DataManager` class; routes between cached CSV load and live scrape depending on user's sidebar selection. `get_data_info()` reports the "Last Updated" timestamp by preferring `data/last_updated.txt` (written at scrape completion, UTC) over the CSV's filesystem mtime — mtime resets on every git checkout/redeploy so it doesn't reflect the real update time. All display timestamps are converted to US Eastern (`US_EASTERN` / `zoneinfo`).
+- **[config.py](config.py)** — All constants. `AppConfig`: universe floors, macro settings, Chowder constants, `SECTOR_RULES`, safety-grade cutoffs, crisis years, timing-indicator settings, portfolio flag thresholds, staleness/Telegram. `BacktestConfig`: backtest defaults, `TAX_PRESETS` (KR default / US), `KR_FINANCIAL_INCOME_THRESHOLD_KRW`, `FX_TICKER`.
+- **[modules/dividend_metrics.py](modules/dividend_metrics.py)** — Per-ticker yfinance metrics, shared by the pipeline and portfolio diagnosis. `compute_ticker_metrics(symbol)` returns leverage (`Net_Debt_EBITDA`, `Interest_Coverage`), 3Y coverage (`FCF_Dividend_Ratio`, `OCF_Dividend_Ratio`), 3Y revenue/EPS CAGR, `Revenue_Decline_Years`, `EPS_CV`, buybacks, yield bands (`Yield_TTM`, `Yield_Pctl_5Y`, 5Y/10Y avg/min/max), cut detection (`Div_Cut_Detected`, `Div_Last_Cut_Year`, `Div_CAGR_5Y_Peak`) and timing (`Price_vs_MA20`, `RSI_14`, `MFI_14`, `Timing_As_Of`), plus an `_errors` list.
+- **[modules/macro_benchmarks.py](modules/macro_benchmarks.py)** — `refresh_macro_benchmarks()` writes `data/macro_benchmarks.json`; `load_macro_benchmarks()` reads it, falling back to config defaults (`source='config_fallback'`).
+- **[modules/data_processor.py](modules/data_processor.py)** — All derived metrics and screening. Call `prepare_all_metrics(df)` on the **full universe** first (percentile ranks are universe-wide), then `filter_stocks(...)`, then `calculate_composite_score(df, weights, score_type)` (`high_dividend` → `high_div_composite`, `dividend_growth` → `dividend_growth_composite`, 0–100).
+  - `sector_group()` → `Sector_Group` (general/energy/utility/reit/mlp/bank/financial) keys into `AppConfig.SECTOR_RULES`.
+  - `add_adjusted_dividend_metrics()` → `Div_CAGR_5Y_Adj`, `Cut_Flag`; `add_div_coverage()` → `Div_Coverage`, `Coverage_Basis`; `add_chowder_number()`; `add_eps_growth_alert()`; `add_shareholder_yield()`; `add_crisis_test()` → `Crisis_Passed`, `Crisis_Count`; `add_growth_badge()`; `add_timing_signal()`; `add_safety_grade()` → `Safety_Grade/Score/Detail`; `add_valuation_signal()` → `Valuation`, `Yield_Trap`.
+  - `filter_stocks()` gates: dividend floors, optional Chowder, sector payout/leverage/interest/coverage rules, EPS > 0, ROE floor, 3 consecutive revenue declines, optional `min_market_cap`. **NaN passes as "unknown"** (except `min_market_cap`).
+  - `calculate_normalized_metrics()` → percentile ranks (`norm_*`, missing = 0.5). Weight key `fcf_coverage` maps to `norm_coverage`.
+- **[modules/portfolio_diagnosis.py](modules/portfolio_diagnosis.py)** — `diagnose_portfolio(holdings, universe)` → `holdings`, `monthly`, `sectors`, `grades`, `summary` (USD/KRW, after-tax, flags). No Streamlit; symbols outside the universe (incl. ETFs) are enriched live.
+- **[modules/portfolio_backtester.py](modules/portfolio_backtester.py)** — Day-by-day simulation (`run_backtest`): DRIP, dividend/capital-gains tax with FIFO tax lots (KR preset: annual netting + ₩2.5M deduction), rebalancing, metrics (Sharpe/Sortino/alpha/beta/VaR/MDD) using the period-average ^IRX risk-free rate, `krw_summary()`.
+- **[modules/update_log.py](modules/update_log.py)** — `record_update()`, `load_history()`, `data_age_days()`, `notify()` (Telegram via `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` env vars; never raises, silent when unset).
+- **[modules/visualization.py](modules/visualization.py)** — Plotly chart builders.
+- **[utils/cache_manager.py](utils/cache_manager.py)** — `load_prepared_dataframe()` (cached prepared universe; use this in pages), `load_main_dataframe()`, `load_macro()`, `show_data_freshness_warning()` (warns past `STALE_DATA_DAYS`=4 with the last failure), `load_historical_prices()` / `load_benchmark_data()`, `clear_all_caches()`.
+- **[utils/data_loader.py](utils/data_loader.py)** — `DataManager`; "Last Updated" prefers `data/last_updated.txt` over file mtime (reset by git checkout); displayed in US Eastern.
+- **[local_update.py](local_update.py)** — Scheduled local update: `git pull --ff-only` → full pipeline → commit/push `DATA_FILES`; Telegram alert on pull/push failure. Exists because Cloudflare blocks the GitHub Actions scrape (scheduled Actions run is disabled; manual dispatch only).
 
 ### Pages ([pages/](pages/))
 
 | File | Purpose |
 |---|---|
-| `1_High_Dividend_Screener.py` | Filters + scores stocks prioritizing yield (default weight 25%, plus FCF-coverage/debt-to-equity/revenue-growth/ROE sustainability and quality weights — 10% combined for the latter two). Flags `Div. Yield` above `AppConfig.HIGH_YIELD_WARNING_THRESHOLD` (10%) with an `Alert` column instead of filtering the stock out — a spiked yield is often a falling price, not a bargain. |
-| `2_Dividend_Growth_Screener.py` | Same UI pattern but weights 5Y CAGR at 35% and payout ratio at 17% (room-to-grow signal); default min consecutive years is 10 (aligned with Dividend Achievers/Growers index methodology). Displays the informational Chowder Number (`add_chowder_number()`) and EPS growth alert (`add_eps_growth_alert()`). |
-| `3_Stock_Details.py` | Per-symbol deep dive: price/yield history (yfinance), dividend history, company info |
-| `4_Portfolio_Backtest.py` | Configures and runs `portfolio_backtester.py`, displays metrics + 4-tab chart view |
+| `1_High_Dividend_Screener.py` | Yield floor defaults to the 10Y Treasury 3Y MA, 5Y CAGR floor to CPI. Score: yield 50 / adj. 5Y CAGR 25 / dividend coverage 25. `Alert` flags yield > 10% |
+| `2_Dividend_Growth_Screener.py` | Yield ≥ 2%, 10y streaks, 5Y CAGR ≥ max(5%, CPI), Chowder Rule gate (on), optional market cap ≥ $20B. Score: adj. 5Y CAGR 60 / yield 40 |
+| `3_Stock_Details.py` | Per-symbol deep dive: 20-metric health grid, cut/trap/EPS flags, crisis and growth badges, price/yield/dividend history |
+| `4_Portfolio_Backtest.py` | Backtest with tax presets (KR default), KRW view, survivorship-bias warning |
+| `5_Portfolio_Diagnosis.py` | Holdings (table or pasted "SYMBOL SHARES") → income, monthly calendar, sector/grade concentration, flags |
 
 ### Data files ([data/](data/))
 
-- `final_df2.csv` — Primary dataset consumed by the app, produced by the scraper pipeline. Row count varies with market conditions and filtering (currently ~200) — `MIN_EXPECTED_STOCKS = 1000` validates the *raw* scrape (`dividend_from_stockanalysis.csv`, ~5,000+ rows) before Stage 2+ filtering narrows it down, not the final output.
-- `dividend_from_stockanalysis.csv` — Raw scrape output before enrichment/filtering; `*_backup.csv` / `*_solo.csv` variants are pipeline backups
-- `last_updated.txt` — UTC ISO timestamp marker written when a scrape completes; see `DataManager._get_last_updated_time` above
-- `dividend_aristocrats.csv`, `dividend_kings.csv`, `schd_holdings.csv` — Static reference lists used to tag the `Category` column
-- `sector_industry.csv`, `screener_indicator_xpaths.csv` — Supporting reference/scraper metadata
+- `final_df2.csv` — App dataset (~380 rows). `MIN_EXPECTED_STOCKS` validates the *raw* scrape (~5,700 rows), not this.
+- `dividend_from_stockanalysis.csv` — Raw scrape; `*_backup.csv` are pipeline backups.
+- `macro_benchmarks.json` — 10Y Treasury MA / CPI used as default floors.
+- `update_history.csv` — One row per pipeline run (status, mode, row counts, failures, macro values, error).
+- `enrichment_failures.csv` — Present only when the last run had yfinance failures.
+- `last_updated.txt` — UTC completion timestamp.
+- `dividend_aristocrats.csv`, `dividend_kings.csv`, `schd_holdings.csv` — Premium lists for `Category`; `sector_industry.csv`, `screener_indicator_xpaths.csv` — reference/scraper metadata.
 
-### Scraping notes
+## Gotchas
 
-- Scraper uses Selenium with headless Chrome; XPaths for StockAnalysis.com are stored in `AppConfig.SCRAPER_XPATHS` (plus `POPUP_XPATH`, `NEXT_BUTTON_XPATH`, `INDICATORS_TOGGLE_XPATH`, `INDICATOR_PANEL_XPATH`) in [config.py](config.py). When the site changes layout, update these XPaths (use `find_xpaths.py` and `debug_scraper*.py` at the repo root to probe the new structure).
-- `MAX_SCRAPE_PAGES = 115` and `MIN_EXPECTED_STOCKS = 1000` are validation guards; a scrape that returns fewer than 1,000 stocks fails validation and aborts before overwriting `final_df2.csv`.
-- A full scrape+enrich run takes ~3-5 minutes (Selenium paging + yfinance enrichment across `YFINANCE_MAX_WORKERS = 5` workers).
+- **Always `auto_adjust=False` for yfinance `history()`** (pipeline, cache_manager, backtester). The default dividend-adjusted close inflates historical yields and double-counts dividends in the DRIP backtest.
+- **Screener widget defaults are hardcoded in the pages**, not read from `AppConfig.DEFAULT_*` / `*_WEIGHTS`. Macro-linked defaults (yield floor, 5Y CAGR) come from `load_macro()`. When changing a default, update the page widget (actual behavior) and config/criteria doc (intent).
+- **Rank before filtering**: percentile scores must come from `prepare_all_metrics()` on the whole universe; ranking a filtered subset changes every score.
+- **Annual dividend = sum of the last f regular payments** (f = median payments/year over 5 complete years, specials > 1.5× median excluded), not a 365-day window — date jitter can catch 5 quarterly payments.
+- **Cut detection needs both methods to agree** (per-payment YoY and calendar-year totals, ±1 year), and a streak ≥ `CUT_CHECK_STREAK_YEARS` (10) overrides it. Either method alone gave many false positives (frequency changes, year-boundary payments, missing yfinance records).
+- **Yahoo rate limits** (`YFRateLimitError`) after heavy runs: `compute_ticker_metrics` retries with backoff and the pipeline does a sequential retry pass; if a rerun still fails, wait and rerun.
+- **Tickers with dots** (`BF.B`) must be passed to yfinance as `BF-B` — convert only at the yfinance call; keep `Symbol` as-is (it is the join key with the premium lists).
+- **Share-class duplicates**: the universe can hold two classes of one company (currently `MKC` and `MKC.V`), counted as separate rows. Unresolved.
+- **Don't replace `Div. Gr. Years` with a yfinance count**: counting increases from yfinance dividend history badly undercounts (KO 64 → 23 years, PH 70 → 9) because of gaps in its long history. Keep the StockAnalysis value.
+- **Windows console encoding**: set `PYTHONIOENCODING=utf-8` (or reconfigure stdout as `local_update.py` does) — the pipeline prints ✓/⚠ and Korean text.
+- Scraper XPaths live in `AppConfig.SCRAPER_XPATHS` etc.; when StockAnalysis.com changes layout, probe with `find_xpaths.py` / `debug_scraper*.py`. The site now labels the dividend column `Dividend`; `collect_stockanalysis_data` renames it back to `Div. ($)` after concatenating pages (validation requires it).
