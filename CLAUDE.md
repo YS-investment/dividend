@@ -63,7 +63,7 @@ Wraps `_run_update_pipeline()`; every run is logged to `data/update_history.csv`
 - **[modules/data_processor.py](modules/data_processor.py)** — All derived metrics and screening. Call `prepare_all_metrics(df)` on the **full universe** first (percentile ranks are universe-wide), then `filter_stocks(...)`, then `calculate_composite_score(df, weights, score_type)` (`high_dividend` → `high_div_composite`, `dividend_growth` → `dividend_growth_composite`, 0–100).
   - `sector_group()` → `Sector_Group` (general/energy/utility/reit/mlp/bank/financial) keys into `AppConfig.SECTOR_RULES`.
   - `add_adjusted_dividend_metrics()` → `Div_CAGR_5Y_Adj`, `Cut_Flag`; `add_div_coverage()` → `Div_Coverage`, `Coverage_Basis`; `add_chowder_number()`; `add_eps_growth_alert()`; `add_shareholder_yield()`; `add_crisis_test()` → `Crisis_Passed`, `Crisis_Count`; `add_growth_badge()`; `add_timing_signal()`; `add_safety_grade()` → `Safety_Grade/Score/Detail`; `add_valuation_signal()` → `Valuation`, `Yield_Trap`.
-  - `filter_stocks()` gates: dividend floors, optional Chowder, sector payout/leverage/interest/coverage rules, EPS > 0, ROE floor, 3 consecutive revenue declines, optional `min_market_cap`. **NaN passes as "unknown"** (except `min_market_cap`).
+  - `filter_stocks()` gates: dividend floors, optional Chowder, sector payout/leverage/interest/coverage rules, EPS > 0, ROE floor, 3 consecutive revenue declines, optional `min_market_cap`. **NaN passes as "unknown"** for payout and the sector/fundamental gates, but **fails** the dividend floors (yield, streaks, 1Y growth, 5Y CAGR), Chowder and `min_market_cap` (NaN comparisons are False).
   - `calculate_normalized_metrics()` → percentile ranks (`norm_*`, missing = 0.5). Weight key `fcf_coverage` maps to `norm_coverage`.
 - **[modules/portfolio_diagnosis.py](modules/portfolio_diagnosis.py)** — `diagnose_portfolio(holdings, universe)` → `holdings`, `monthly`, `sectors`, `grades`, `summary` (USD/KRW, after-tax, flags). No Streamlit; symbols outside the universe (incl. ETFs) are enriched live.
 - **[modules/portfolio_backtester.py](modules/portfolio_backtester.py)** — Day-by-day simulation (`run_backtest`): DRIP, dividend/capital-gains tax with FIFO tax lots (KR preset: annual netting + ₩2.5M deduction), rebalancing, metrics (Sharpe/Sortino/alpha/beta/VaR/MDD) using the period-average ^IRX risk-free rate, `krw_summary()`.
@@ -82,6 +82,19 @@ Wraps `_run_update_pipeline()`; every run is logged to `data/update_history.csv`
 | `3_Stock_Details.py` | Per-symbol deep dive: 20-metric health grid, cut/trap/EPS flags, crisis and growth badges, price/yield/dividend history |
 | `4_Portfolio_Backtest.py` | Backtest with tax presets (KR default), KRW view, survivorship-bias warning |
 | `5_Portfolio_Diagnosis.py` | Holdings (table or pasted "SYMBOL SHARES") → income, monthly calendar, sector/grade concentration, flags |
+
+### Consultant skill ([.claude/skills/dividend-consultant/](.claude/skills/dividend-consultant/SKILL.md))
+
+Claude Code skill (Korean) with 4 modes: `screen.py`, `stock.py`, `portfolio.py`, `plan.py` in `scripts/`. Each one prints a single JSON object, and `references/<mode>.md` maps that JSON to the report.
+
+- `scripts/_common.py`: chdirs to the repo root, then loads the universe via `prepare_all_metrics`. It also holds:
+  - `track_params()`: copies the screener page defaults. **Keep it in sync when page widget defaults change.**
+  - `gate_report()`: tests each gate alone through `filter_stocks`.
+  - `action()`: assigns the action label.
+  - `propose_weights()` / `cap_weights()`: build the capped weight proposal.
+  - `freshness()`: the stale-data check.
+- Judgments live in the scripts; the skill only explains them. Add new logic to the scripts or modules, not to the markdown.
+- Personal holdings go in repo-root `holdings.csv` (`symbol,shares`), which is gitignored.
 
 ### Data files ([data/](data/))
 
