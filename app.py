@@ -6,7 +6,7 @@ Streamlit-based web application for dividend stock analysis
 import streamlit as st
 import os
 from datetime import datetime
-from utils.cache_manager import load_main_dataframe, clear_all_caches
+from utils.cache_manager import load_main_dataframe, clear_all_caches, show_data_freshness_warning
 from utils.data_loader import DataManager, check_data_file_exists, US_EASTERN
 from config import AppConfig
 
@@ -198,6 +198,7 @@ except Exception as e:
 
 # Main content
 st.markdown('<p class="main-header">💰 Summary</p>', unsafe_allow_html=True)
+show_data_freshness_warning()
 
 st.markdown("""
 Welcome to the comprehensive dividend stock analysis platform. This tool helps you:

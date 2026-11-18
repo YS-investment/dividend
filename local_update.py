@@ -28,6 +28,8 @@ DATA_FILES = [
     "data/final_df2.csv",
     "data/dividend_from_stockanalysis.csv",
     "data/last_updated.txt",
+    "data/macro_benchmarks.json",
+    "data/update_history.csv",
 ]
 
 
@@ -42,16 +44,21 @@ def main() -> int:
     print("=" * 60)
     print("Syncing with origin/main before scraping...")
     print("=" * 60)
+    sys.path.insert(0, str(REPO_ROOT))
+    from modules.update_log import notify
+
     try:
         run(["git", "pull", "--ff-only"])
     except subprocess.CalledProcessError:
         print("⚠ git pull --ff-only failed (local changes or diverged history).")
         print("  Resolve manually before this can push its results.")
+        notify("❌ Dividend local update: git pull --ff-only failed - resolve manually.")
         return 1
 
-    sys.path.insert(0, str(REPO_ROOT))
     from modules.data_collector import DividendDataCollector
 
+    # update_all_data() records the run in data/update_history.csv and sends
+    # a Telegram alert itself on failure, so just let the exception surface.
     DividendDataCollector().update_all_data(use_scraping=True)
 
     print("\n" + "=" * 60)
@@ -72,6 +79,7 @@ def main() -> int:
     except subprocess.CalledProcessError:
         print("⚠ git push failed — likely a concurrent update from GitHub Actions.")
         print("  The commit is saved locally; run 'git pull --rebase && git push' by hand.")
+        notify("⚠️ Dividend local update: data committed but git push failed - push by hand.")
         return 1
 
     return 0

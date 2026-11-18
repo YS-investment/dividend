@@ -5,15 +5,10 @@ Focus on stocks with strong dividend growth momentum
 
 import streamlit as st
 import pandas as pd
-from utils.cache_manager import load_main_dataframe
+from utils.cache_manager import load_prepared_dataframe, load_macro, show_data_freshness_warning
 from modules.data_processor import (
     filter_stocks,
-    calculate_normalized_metrics,
     calculate_composite_score,
-    get_top_stocks,
-    add_market_cap_tier,
-    add_chowder_number,
-    add_eps_growth_alert
 )
 from modules.visualization import (
     create_top_stocks_bar_chart,
@@ -25,27 +20,47 @@ from config import AppConfig
 st.set_page_config(page_title="Dividend Growth Screener", page_icon="📈", layout="wide")
 
 st.title("📈 Dividend Growth Stock Screener")
+show_data_freshness_warning()
 st.markdown("Identify stocks with consistent and strong dividend growth rates.")
 
-# Load data
-df = load_main_dataframe(use_cached=True)
+# Load data (derived metrics + universe-wide percentile ranks already computed)
+df = load_prepared_dataframe()
 
 if df is None:
     st.error("No data available. Please return to home page and load data.")
     st.stop()
 
-# Add market cap tier column before filtering
-df = add_market_cap_tier(df)
+macro = load_macro()
+cpi_pct = round(macro['cpi_annualized'] * 100, 2)
 
 # Sidebar Filters
 st.sidebar.header("🔍 Filter Criteria")
+st.sidebar.caption(
+    f"기준값 — CPI {AppConfig.CPI_YEARS}년 연환산 **{macro['cpi_annualized']:.2%}** "
+    f"(기준월 {macro.get('cpi_as_of') or 'N/A'})"
+    + (" ⚠️ 기본값 사용 중" if macro.get('source') == 'config_fallback' else "")
+)
 
 min_yield = st.sidebar.slider(
     "Minimum Dividend Yield (%)",
-    min_value=0.0,
-    max_value=10.0,  # Growth screener targets lower current yield, higher growth
-    value=2.0,  # Lower default for growth stocks
-    step=0.1
+    min_value=AppConfig.UNIVERSE_MIN_YIELD * 100,
+    max_value=10.0,
+    value=AppConfig.UNIVERSE_MIN_YIELD * 100,
+    step=0.1,
+    help="최소 2% (2% 미만 배당성장주는 유니버스에서 제외)."
+)
+
+apply_chowder = st.sidebar.checkbox(
+    "Apply Chowder Rule",
+    value=True,
+    help=f"Div. Yield % + adjusted 5Y CAGR % ≥ {AppConfig.CHOWDER_MIN_HIGH_YIELD:g} "
+         f"(yield ≥ {AppConfig.CHOWDER_YIELD_PIVOT:.0%}) or ≥ {AppConfig.CHOWDER_MIN_LOW_YIELD:g} (yield below)."
+)
+
+apply_min_cap = st.sidebar.checkbox(
+    f"Market Cap ≥ ${AppConfig.GROWTH_MIN_MARKET_CAP_USD / 1e9:.0f}B",
+    value=False,
+    help="대형주만 보기 (주가 변동이 큰 소형주 제외, 리스크 관리). 시가총액을 모르는 종목은 제외됩니다."
 )
 
 payout_range = st.sidebar.slider(
@@ -53,7 +68,9 @@ payout_range = st.sidebar.slider(
     min_value=0,
     max_value=100,
     value=(15, 60),  # Upper bound aligned to the growth-stock payout "sweet spot"
-    step=5
+    step=5,
+    help="General/Energy only. Sector overrides: Utilities ≤80%, Banks/Financials ≤60%, "
+         "REITs/MLPs exempt (OCF coverage ≥1.2x instead)."
 )
 
 min_years = st.sidebar.slider(
@@ -86,17 +103,9 @@ min_growth_5y = st.sidebar.slider(
     "Minimum 5Y Dividend Growth (CAGR %)",
     min_value=0.0,
     max_value=50.0,
-    value=5.0,  # Higher for growth focus
-    step=0.5
-)
-
-max_debt_equity = st.sidebar.slider(
-    "Maximum Debt-to-Equity",
-    min_value=0.0,
-    max_value=500.0,
-    value=200.0,
-    step=10.0,
-    help="Pass/fail quality gate - excludes over-leveraged stocks. Raw yfinance scale (100 ≈ 1.0x). Missing data passes through."
+    value=max(5.0, cpi_pct),  # growth focus, never below inflation
+    step=0.01,
+    help="기본값 = max(5%, CPI 5년 연환산). 삭감 후 회복 기저효과를 보정한 Div_CAGR_5Y_Adj 기준."
 )
 
 min_roe = st.sidebar.slider(
@@ -110,8 +119,20 @@ min_roe = st.sidebar.slider(
          "Dividend Screener since growth investing weighs capital efficiency more heavily). "
          "Missing data passes through. Negative ROE also passes through unfiltered - it "
          "almost always signals negative shareholders' equity from buybacks (e.g. Philip "
-         "Morris), not real unprofitability."
+         "Morris), not real unprofitability. REITs/MLPs exempt."
 )
+
+with st.sidebar.expander("ℹ️ Sector-specific gates (always on)"):
+    st.markdown(
+        "| Group | Net debt/EBITDA | Interest cov. | Coverage |\n|---|---|---|---|\n"
+        + "\n".join(
+            f"| {g} | ≤{r['max_nd_ebitda'] or '—'} | ≥{r['min_int_cov'] or '—'} | "
+            f"{r['coverage'].upper()}{' ≥' + str(r['min_coverage']) if r['min_coverage'] else ''} |"
+            for g, r in AppConfig.SECTOR_RULES.items()
+        )
+        + "\n\nAlso: Trailing EPS > 0 and no "
+        f"{AppConfig.REVENUE_DECLINE_YEARS_FAIL} consecutive annual revenue declines. Missing data passes."
+    )
 
 # Sector filter
 if 'Sector' in df.columns:
@@ -140,11 +161,10 @@ else:
 st.subheader("⚖️ Customize Scoring Weights")
 st.markdown("Weights are optimized for growth focus (must sum to 1.0)")
 st.caption(
-    "Only these 2 metrics are scored/ranked, mirroring the Chowder Rule (yield + 5Y growth). "
-    "Dividend Gr. Years, Payment Years, 1Y Growth, Payout Ratio, Debt-to-Equity, ROE, and "
-    "Revenue Growth are applied as pass/fail filters in the sidebar instead - a stock either "
-    "qualifies as a quality growth stock or it doesn't, so no dividend metric can outweigh a "
-    "fundamentals red flag."
+    "Only these 2 metrics are scored (universe-wide percentile ranks), mirroring the Chowder Rule "
+    "(yield + 5Y growth). Growth years, payout, leverage, interest coverage, earnings, ROE, revenue "
+    "trend and the Chowder Rule itself are pass/fail gates instead - so no dividend metric can "
+    "outweigh a fundamentals red flag."
 )
 
 col1, col2 = st.columns(2)
@@ -172,8 +192,9 @@ filtered_df = filter_stocks(
     min_div_years=min_div_years,
     min_growth=min_growth / 100,
     min_growth_5y=min_growth_5y / 100,
-    max_debt_equity=max_debt_equity,
     min_roe=min_roe,
+    apply_chowder=apply_chowder,
+    min_market_cap=AppConfig.GROWTH_MIN_MARKET_CAP_USD if apply_min_cap else None,
     sectors=selected_sectors if selected_sectors else None,
     mkt_cap_tiers=selected_tiers if selected_tiers else None
 )
@@ -187,31 +208,28 @@ if len(filtered_df) > 0:
         'yield': w_yield
     }
 
-    filtered_df = calculate_normalized_metrics(filtered_df)
     filtered_df = calculate_composite_score(filtered_df, weights=weights, score_type='dividend_growth')
-    filtered_df = add_chowder_number(filtered_df)
-    filtered_df = add_eps_growth_alert(filtered_df)
+    filtered_df = filtered_df.sort_values('dividend_growth_composite', ascending=False)
 
     st.subheader(f"📋 Screener Results ({len(filtered_df)} stocks found)")
 
     with st.expander("ℹ️ Chowder Number"):
         st.markdown("""
-        **Chowder Number = Div. Yield (%) + 5Y Dividend Growth CAGR (%)**
+        **Chowder Number = Div. Yield (%) + adjusted 5Y Dividend Growth CAGR (%)**
 
         A dividend-growth-investing heuristic for expected long-term total return.
-        Informational only - it does not filter results or affect the composite score.
-        - Yield ≥ 3%: look for Chowder Number ≥ 12
-        - Yield < 3%: look for Chowder Number ≥ 15
+        Applied as a pass/fail gate when "Apply Chowder Rule" is checked:
+        - Yield ≥ 3%: Chowder Number ≥ 12
+        - Yield < 3%: Chowder Number ≥ 15
         """)
 
     with st.expander("⚠️ EPS Growth Alert"):
         st.markdown("""
-        **EPS_Alert flags stocks where 1Y dividend growth > 1Y EPS (earnings) growth.**
+        **EPS_Alert flags stocks where the adjusted 5Y dividend CAGR > 3Y EPS CAGR.**
 
-        When dividends grow faster than earnings, the increase is coming from a
-        rising payout ratio rather than genuine earnings growth - harder to
-        sustain long-term. Informational only - it does not filter results or
-        affect the composite score. Stocks with no EPS data available are not flagged.
+        When dividends grow faster than earnings over several years, the increase is
+        coming from a rising payout ratio rather than genuine earnings growth - harder
+        to sustain. Informational only. Stocks with no EPS history are not flagged.
         """)
 
     # Display market cap tier classification
@@ -227,7 +245,10 @@ if len(filtered_df) > 0:
 
     # Column selector
     all_columns = filtered_df.columns.tolist()
-    default_columns = ['Symbol', 'EPS_Alert', 'Company Name', 'Category', 'Sector', 'Market Cap', 'mkt_cap_tier', 'Div. Growth 5Y', 'Div. Growth', 'EPS_Growth', 'Revenue_Growth', 'ROE', 'Div. Yield', 'chowder_number', 'Div. Gr. Years', 'Div. Years', 'dividend_growth_composite']
+    default_columns = ['Symbol', 'EPS_Alert', 'Yield_Trap', 'Company Name', 'Category', 'Sector_Group', 'Market Cap',
+                       'Div_CAGR_5Y_Adj', 'Div. Growth', 'EPS_CAGR_3Y', 'Revenue_CAGR_3Y', 'Div. Yield',
+                       'chowder_number', 'Safety_Grade', 'Valuation', 'Timing_Signal', 'Growth_Badge',
+                       'Crisis_Passed', 'Div. Gr. Years', 'Shareholder_Yield', 'dividend_growth_composite']
     available_default = [col for col in default_columns if col in all_columns]
 
     display_columns = st.multiselect(
@@ -246,14 +267,13 @@ if len(filtered_df) > 0:
         display_df = sorted_df[display_columns].head(50).copy()
 
         # Format percentage columns
-        pct_cols = ['Div. Yield', 'Payout Ratio', 'Div. Growth', 'Div. Growth 5Y', 'EPS_Growth', 'Revenue_Growth']
+        pct_cols = ['Div. Yield', 'Payout Ratio', 'Div. Growth', 'Div. Growth 5Y', 'Div_CAGR_5Y_Adj',
+                    'EPS_Growth', 'Revenue_Growth', 'Revenue_CAGR_3Y', 'EPS_CAGR_3Y', 'Shareholder_Yield',
+                    'Net_Buyback_Yield', 'Shares_Change_3Y', 'Yield_TTM']
         for col in pct_cols:
             if col in display_df.columns:
-                display_df[col] = (display_df[col] * 100).round(2).astype(str) + '%'
-
-        # Format composite score
-        if 'dividend_growth_composite' in display_df.columns:
-            display_df['dividend_growth_composite'] = display_df['dividend_growth_composite'].round(3)
+                vals = pd.to_numeric(display_df[col], errors='coerce')
+                display_df[col] = vals.map(lambda v: f"{v * 100:.2f}%" if pd.notna(v) else '')
 
         st.dataframe(display_df, width='stretch', hide_index=True)
 

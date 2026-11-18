@@ -6,8 +6,8 @@ Deep dive analysis for individual stocks with visualizations
 import streamlit as st
 import pandas as pd
 import yfinance as yf
-from utils.cache_manager import load_main_dataframe, load_historical_prices
-from modules.data_processor import add_market_cap_tier
+from config import AppConfig
+from utils.cache_manager import load_prepared_dataframe, load_historical_prices, show_data_freshness_warning
 from modules.visualization import (
     create_price_chart_with_ema,
     create_yield_chart_with_stats,
@@ -17,17 +17,15 @@ from modules.visualization import (
 st.set_page_config(page_title="Stock Details", page_icon="🔍", layout="wide")
 
 st.title("🔍 Stock Details & Analysis")
+show_data_freshness_warning()
 st.markdown("Deep dive into individual stock dividend analysis with historical data and visualizations.")
 
 # Load data
-df = load_main_dataframe(use_cached=True)
+df = load_prepared_dataframe()
 
 if df is None:
     st.error("No data available. Please return to home page and load data.")
     st.stop()
-
-# Add market cap tier column (same classification used by the screeners)
-df = add_market_cap_tier(df)
 
 # Stock selector
 st.subheader("Select Stock")
@@ -82,64 +80,79 @@ with col4:
 # Financial Health Metrics
 st.markdown("---")
 st.subheader("Financial Health Metrics")
-st.caption("These are the same fundamentals fed into the dividend screeners' filters and composite score.")
+st.caption(
+    f"Sector group: **{stock_data.get('Sector_Group', 'N/A')}** — the screeners apply this group's "
+    "leverage / coverage / payout rules. Coverage basis: "
+    f"**{str(stock_data.get('Coverage_Basis', 'N/A')).upper()}**."
+)
 
-col5, col6, col7, col8, col9 = st.columns(5)
 
-with col5:
-    fcf_ratio = stock_data.get('FCF_Dividend_Ratio')
-    if pd.notna(fcf_ratio):
-        st.metric(
-            "FCF/Dividend Ratio",
-            f"{fcf_ratio:.2f}x",
-            help="Free Cash Flow divided by Total Dividends Paid. >1.0 means FCF fully covers dividends."
-        )
-    else:
-        st.metric("FCF/Dividend Ratio", "N/A", help="Data not available")
+def _fmt(value, kind):
+    if value is None or (not isinstance(value, str) and pd.isna(value)):
+        return "N/A"
+    if kind == 'x':
+        return f"{value:.2f}x"
+    if kind == 'pct':
+        return f"{value * 100:.2f}%"
+    if kind == 'pct_raw':
+        return f"{value:.2f}%"
+    if kind == 'num':
+        return f"{value:.1f}"
+    if isinstance(value, str) and not value:
+        return "—"
+    if kind == 'int':
+        return f"{int(value)} / {len(AppConfig.CRISIS_YEARS)}"
+    return str(value)
 
-with col6:
-    debt_to_equity = stock_data.get('Debt_to_Equity')
-    if pd.notna(debt_to_equity):
-        st.metric(
-            "Debt-to-Equity (D/E)",
-            f"{debt_to_equity:.2f}",
-            help="Total debt divided by shareholder equity. Lower values indicate less financial leverage."
-        )
-    else:
-        st.metric("Debt-to-Equity (D/E)", "N/A", help="Data not available")
 
-with col7:
-    roe = stock_data.get('ROE')
-    if pd.notna(roe):
-        st.metric(
-            "ROE",
-            f"{roe:.2f}%",
-            help="Return on Equity. Measures profitability - how much profit is generated per dollar of equity."
-        )
-    else:
-        st.metric("ROE", "N/A", help="Data not available")
+HEALTH_METRICS = [
+    ("Safety Grade", 'Safety_Grade', 'str', "A-F from coverage, leverage, interest coverage, cut history, earnings "
+                                            "stability, plus a bonus for growing the dividend through 2008"),
+    ("Dividend Coverage", 'Div_Coverage', 'x', "Sector-appropriate: 3Y FCF/div, 3Y OCF/div (REIT/MLP), or 1/payout"),
+    ("Net Debt / EBITDA", 'Net_Debt_EBITDA', 'x', "Negative = net cash"),
+    ("Interest Coverage", 'Interest_Coverage', 'x', "EBIT / interest expense (latest year)"),
+    ("Adj. 5Y Div CAGR", 'Div_CAGR_5Y_Adj', 'pct', "5Y CAGR corrected for cut-rebound base effects"),
+    ("Valuation", 'Valuation', 'str', "From the current TTM yield's percentile within its 5Y history"),
+    ("Yield Percentile (5Y)", 'Yield_Pctl_5Y', 'num', "0 = lowest yield (richest) in 5Y, 100 = highest (cheapest)"),
+    ("P/FCF (3Y avg)", 'P_FCF', 'num', "Market cap / 3Y average free cash flow"),
+    ("Revenue CAGR 3Y", 'Revenue_CAGR_3Y', 'pct', "Annual statements"),
+    ("EPS CAGR 3Y", 'EPS_CAGR_3Y', 'pct', "Diluted EPS, annual statements"),
+    ("ROE", 'ROE', 'pct_raw', "Return on equity"),
+    ("Trailing EPS", 'Trailing_EPS', 'num', "Net-loss gate (EPS <= 0 fails, except REIT/MLP)"),
+    ("Shareholder Yield", 'Shareholder_Yield', 'pct', "Dividend yield + net buyback yield"),
+    ("Net Buyback Yield", 'Net_Buyback_Yield', 'pct', "(Repurchases - issuance) / market cap, latest year"),
+    ("Shares Change 3Y", 'Shares_Change_3Y', 'pct', "Negative = buybacks shrinking share count; positive = dilution"),
+    ("Crises Passed", 'Crisis_Count', 'int', "Crises (2000/2008/2020) the dividend kept growing through, from the "
+                                              "consecutive-increase streak. Passing 2008 adds a safety bonus"),
+    ("Price vs 20D MA", 'Price_vs_MA20', 'pct', "Last close vs 20-day average (as of data update)"),
+    ("RSI (14)", 'RSI_14', 'num', f"≤{AppConfig.TIMING_RSI_OVERSOLD} = oversold"),
+    ("MFI (14)", 'MFI_14', 'num', f"≤{AppConfig.TIMING_MFI_OVERSOLD} = oversold (volume-weighted)"),
+    ("Timing", 'Timing_Signal', 'str', "과매도 / 20일선 아래 - reference only, not a filter"),
+]
 
-with col8:
-    revenue_growth = stock_data.get('Revenue_Growth')
-    if pd.notna(revenue_growth):
-        st.metric(
-            "Revenue Growth (YoY)",
-            f"{revenue_growth * 100:.2f}%",
-            help="Trailing year-over-year revenue growth. Used both as a scoring input and to filter out stocks with a declining revenue base."
-        )
-    else:
-        st.metric("Revenue Growth (YoY)", "N/A", help="Data not available")
+for row_start in range(0, len(HEALTH_METRICS), 5):
+    cols = st.columns(5)
+    for col, (label, key, kind, help_text) in zip(cols, HEALTH_METRICS[row_start:row_start + 5]):
+        with col:
+            st.metric(label, _fmt(stock_data.get(key), kind), help=help_text)
 
-with col9:
-    trailing_eps = stock_data.get('Trailing_EPS')
-    if pd.notna(trailing_eps):
-        st.metric(
-            "Trailing EPS",
-            f"${trailing_eps:.2f}",
-            help="Trailing twelve-month earnings per share. Not used in scoring - only to filter out net-loss companies (EPS <= 0)."
-        )
-    else:
-        st.metric("Trailing EPS", "N/A", help="Data not available")
+flags = []
+if bool(stock_data.get('Cut_Flag')):
+    last_cut = stock_data.get('Div_Last_Cut_Year')
+    flags.append(f"⚠️ 최근 10년 내 배당 삭감 감지 ({int(last_cut) if pd.notna(last_cut) else '?'}년)")
+for key in ('Yield_Trap', 'EPS_Alert'):
+    if stock_data.get(key):
+        flags.append(str(stock_data.get(key)))
+if flags:
+    st.warning("  \n".join(flags))
+badges = [b for b in (stock_data.get('Growth_Badge'),
+                      f"위기 통과: {stock_data.get('Crisis_Passed')}" if stock_data.get('Crisis_Passed') else '') if b]
+if badges:
+    st.success("  \n".join(f"✅ {b}" for b in badges))
+if stock_data.get('Timing_As_Of'):
+    st.caption(f"Timing indicators as of {stock_data.get('Timing_As_Of')}")
+if stock_data.get('Safety_Detail'):
+    st.caption(f"Safety components (0-2 each): {stock_data.get('Safety_Detail')}")
 
 st.divider()
 
@@ -154,7 +167,7 @@ tab1, tab2, tab3 = st.tabs([
 with st.spinner(f"Loading historical data for {selected_symbol}..."):
     try:
         ticker = yf.Ticker(selected_symbol)
-        hist_data = ticker.history(period="5y")
+        hist_data = ticker.history(period="5y", auto_adjust=False)
         dividends = ticker.dividends
         calendar = ticker.calendar
         info = ticker.info

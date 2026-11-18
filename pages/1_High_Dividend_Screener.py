@@ -5,13 +5,10 @@ Filter and rank stocks based on dividend yield with customizable criteria
 
 import streamlit as st
 import pandas as pd
-from utils.cache_manager import load_main_dataframe
+from utils.cache_manager import load_prepared_dataframe, load_macro, show_data_freshness_warning
 from modules.data_processor import (
     filter_stocks,
-    calculate_normalized_metrics,
     calculate_composite_score,
-    get_top_stocks,
-    add_market_cap_tier
 )
 from modules.visualization import (
     create_top_stocks_bar_chart,
@@ -23,28 +20,36 @@ from config import AppConfig
 st.set_page_config(page_title="High Dividend Screener", page_icon="📊", layout="wide")
 
 st.title("📊 High Dividend Stock Screener")
+show_data_freshness_warning()
 st.markdown("Filter and analyze high-yielding dividend stocks with custom criteria and weightings.")
 
-# Load data
-df = load_main_dataframe(use_cached=True)
+# Load data (derived metrics + universe-wide percentile ranks already computed)
+df = load_prepared_dataframe()
 
 if df is None:
     st.error("No data available. Please return to home page and load data.")
     st.stop()
 
-# Add market cap tier column before filtering
-df = add_market_cap_tier(df)
+macro = load_macro()
+rate_floor_pct = max(round(macro['treasury_10y_ma'] * 100, 2), AppConfig.UNIVERSE_MIN_YIELD * 100)
+cpi_pct = round(macro['cpi_annualized'] * 100, 2)
 
 # Sidebar Filters
 st.sidebar.header("🔍 Filter Criteria")
+st.sidebar.caption(
+    f"기준값 — 10년물 국채 {AppConfig.RATE_MA_YEARS}년 평균 **{macro['treasury_10y_ma']:.2%}** "
+    f"(기준일 {macro.get('rate_as_of') or 'N/A'}), CPI {AppConfig.CPI_YEARS}년 연환산 "
+    f"**{macro['cpi_annualized']:.2%}** (기준월 {macro.get('cpi_as_of') or 'N/A'})"
+    + (" ⚠️ 기본값 사용 중" if macro.get('source') == 'config_fallback' else "")
+)
 
 min_yield = st.sidebar.slider(
     "Minimum Dividend Yield (%)",
-    min_value=0.0,
+    min_value=AppConfig.UNIVERSE_MIN_YIELD * 100,
     max_value=15.0,
-    value=3.5,
-    step=0.1,
-    help="Filter stocks with dividend yield above this threshold"
+    value=rate_floor_pct,
+    step=0.01,
+    help="기본값 = 10년물 국채 3년 이동평균 (배당률 > 이자율 원칙). 최소 2%."
 )
 
 payout_range = st.sidebar.slider(
@@ -53,7 +58,8 @@ payout_range = st.sidebar.slider(
     max_value=100,
     value=(20, 70),
     step=5,
-    help="Healthy payout ratio indicates sustainability"
+    help="General/Energy only. Sector overrides: Utilities ≤80%, Banks/Financials ≤60%, "
+         "REITs/MLPs exempt (OCF coverage ≥1.2x instead)."
 )
 
 min_years = st.sidebar.slider(
@@ -87,18 +93,10 @@ min_growth_5y = st.sidebar.slider(
     "Minimum 5Y Dividend Growth (CAGR %)",
     min_value=0.0,
     max_value=50.0,
-    value=3.0,
-    step=0.5,
-    help="5-year compound annual growth rate"
-)
-
-max_debt_equity = st.sidebar.slider(
-    "Maximum Debt-to-Equity",
-    min_value=0.0,
-    max_value=500.0,
-    value=200.0,
-    step=10.0,
-    help="Pass/fail quality gate - excludes over-leveraged stocks. Raw yfinance scale (100 ≈ 1.0x). Missing data passes through."
+    value=cpi_pct,
+    step=0.01,
+    help="기본값 = CPI 5년 연환산 (배당성장률 > 물가 원칙). 삭감 후 회복 기저효과를 보정한 "
+         "Div_CAGR_5Y_Adj 기준."
 )
 
 min_roe = st.sidebar.slider(
@@ -109,8 +107,21 @@ min_roe = st.sidebar.slider(
     step=1.0,
     help="Pass/fail quality gate - minimum capital efficiency. Missing data passes through. "
          "Negative ROE also passes through unfiltered - it almost always signals negative "
-         "shareholders' equity from buybacks (e.g. Philip Morris), not real unprofitability."
+         "shareholders' equity from buybacks (e.g. Philip Morris), not real unprofitability. "
+         "REITs/MLPs exempt."
 )
+
+with st.sidebar.expander("ℹ️ Sector-specific gates (always on)"):
+    st.markdown(
+        "| Group | Net debt/EBITDA | Interest cov. | Coverage |\n|---|---|---|---|\n"
+        + "\n".join(
+            f"| {g} | ≤{r['max_nd_ebitda'] or '—'} | ≥{r['min_int_cov'] or '—'} | "
+            f"{r['coverage'].upper()}{' ≥' + str(r['min_coverage']) if r['min_coverage'] else ''} |"
+            for g, r in AppConfig.SECTOR_RULES.items()
+        )
+        + "\n\nAlso: Trailing EPS > 0 and no "
+        f"{AppConfig.REVENUE_DECLINE_YEARS_FAIL} consecutive annual revenue declines. Missing data passes."
+    )
 
 # Sector filter (if available)
 if 'Sector' in df.columns:
@@ -140,10 +151,11 @@ else:
 st.subheader("⚖️ Customize Scoring Weights")
 st.markdown("Adjust weights to prioritize different metrics (must sum to 1.0)")
 st.caption(
-    "Only these 3 metrics are scored/ranked. Dividend Gr. Years, Payment Years, 1Y Growth, "
-    "Payout Ratio, Debt-to-Equity, ROE, and Revenue Growth are applied as pass/fail filters "
-    "in the sidebar instead - a stock either qualifies as a quality stock or it doesn't, "
-    "so no dividend metric can outweigh a fundamentals red flag."
+    "Only these 3 metrics are scored, as percentile ranks across the whole universe "
+    "(score 70 = better than ~70% of the universe on the weighted blend). Growth years, payout, "
+    "leverage, interest coverage, earnings, ROE and revenue trend are pass/fail gates instead - "
+    "so no dividend metric can outweigh a fundamentals red flag. Safety_Grade and Valuation are "
+    "informational."
 )
 
 col1, col2, col3 = st.columns(3)
@@ -153,8 +165,9 @@ with col1:
 with col2:
     w_cagr = st.number_input("5Y CAGR", min_value=0.0, max_value=1.0, value=0.25, step=0.05)
 with col3:
-    w_fcf = st.number_input("FCF Coverage", min_value=0.0, max_value=1.0, value=0.25, step=0.05,
-                             help="FCF / Dividends paid - higher means more room to cover the dividend")
+    w_fcf = st.number_input("Dividend Coverage", min_value=0.0, max_value=1.0, value=0.25, step=0.05,
+                             help="Sector-appropriate coverage (Div_Coverage): 3Y FCF/dividends, "
+                                  "3Y OCF/dividends for REITs/MLPs, 1/payout for utilities and financials")
 
 # Validate weights
 total_weight = w_yield + w_cagr + w_fcf
@@ -175,7 +188,6 @@ filtered_df = filter_stocks(
     min_div_years=min_div_years,
     min_growth=min_growth / 100,
     min_growth_5y=min_growth_5y / 100,
-    max_debt_equity=max_debt_equity,
     min_roe=min_roe,
     sectors=selected_sectors if selected_sectors else None,
     mkt_cap_tiers=selected_tiers if selected_tiers else None
@@ -191,8 +203,8 @@ if len(filtered_df) > 0:
         'fcf_coverage': w_fcf
     }
 
-    filtered_df = calculate_normalized_metrics(filtered_df)
     filtered_df = calculate_composite_score(filtered_df, weights=weights, score_type='high_dividend')
+    filtered_df = filtered_df.sort_values('high_div_composite', ascending=False)
 
     # Flag abnormally high yields for manual review rather than filtering them out -
     # a spiked yield is often a symptom of a falling stock price, not a bargain.
@@ -218,7 +230,10 @@ if len(filtered_df) > 0:
 
     # Column selector
     all_columns = filtered_df.columns.tolist()
-    default_columns = ['Symbol', 'Alert', 'Company Name', 'Category', 'Sector', 'Market Cap', 'mkt_cap_tier', 'Div. Yield', 'Payout Ratio', 'FCF_Dividend_Ratio', 'Debt_to_Equity', 'Revenue_Growth', 'ROE', 'Div. Gr. Years', 'Div. Years', 'Div. Growth 5Y', 'high_div_composite']
+    default_columns = ['Symbol', 'Alert', 'Yield_Trap', 'Company Name', 'Category', 'Sector_Group', 'Market Cap',
+                       'Div. Yield', 'Safety_Grade', 'Valuation', 'Yield_Pctl_5Y', 'Timing_Signal', 'Div_Coverage',
+                       'Net_Debt_EBITDA', 'Payout Ratio', 'Div. Gr. Years', 'Crisis_Passed', 'Growth_Badge',
+                       'Div_CAGR_5Y_Adj', 'Shareholder_Yield', 'high_div_composite']
     available_default = [col for col in default_columns if col in all_columns]
 
     display_columns = st.multiselect(
@@ -237,14 +252,13 @@ if len(filtered_df) > 0:
         display_df = sorted_df[display_columns].head(50).copy()
 
         # Format percentage columns
-        pct_cols = ['Div. Yield', 'Payout Ratio', 'Div. Growth', 'Div. Growth 5Y', 'Revenue_Growth']
+        pct_cols = ['Div. Yield', 'Payout Ratio', 'Div. Growth', 'Div. Growth 5Y', 'Div_CAGR_5Y_Adj',
+                    'Revenue_Growth', 'Revenue_CAGR_3Y', 'EPS_CAGR_3Y', 'Shareholder_Yield',
+                    'Net_Buyback_Yield', 'Shares_Change_3Y', 'Yield_TTM']
         for col in pct_cols:
             if col in display_df.columns:
-                display_df[col] = (display_df[col] * 100).round(2).astype(str) + '%'
-
-        # Format composite score
-        if 'high_div_composite' in display_df.columns:
-            display_df['high_div_composite'] = display_df['high_div_composite'].round(3)
+                vals = pd.to_numeric(display_df[col], errors='coerce')
+                display_df[col] = vals.map(lambda v: f"{v * 100:.2f}%" if pd.notna(v) else '')
 
         st.dataframe(display_df, width='stretch', hide_index=True)
 

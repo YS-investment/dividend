@@ -28,7 +28,7 @@ from modules.visualization import (
     create_tax_payment_chart,
     create_pre_post_tax_comparison
 )
-from utils.cache_manager import load_main_dataframe
+from utils.cache_manager import load_main_dataframe, show_data_freshness_warning
 from config import BacktestConfig
 
 # Page configuration
@@ -40,6 +40,7 @@ st.set_page_config(
 
 # Header
 st.title("📊 Portfolio Backtest Simulator")
+show_data_freshness_warning()
 st.markdown("""
 Comprehensive portfolio performance analysis featuring:
 - **DRIP Simulation**: Automatic dividend reinvestment with fractional shares
@@ -167,34 +168,58 @@ tax_enabled = st.sidebar.checkbox(
 )
 
 tax_config = None
+tax_preset = None
 if tax_enabled:
+    preset_names = list(BacktestConfig.TAX_PRESETS.keys())
+    tax_preset = st.sidebar.selectbox(
+        "Tax Preset",
+        preset_names,
+        index=preset_names.index(BacktestConfig.DEFAULT_TAX_PRESET),
+        help="한국 거주자: 미국 배당 원천징수 15%, 해외주식 양도세 22% (연 250만원 공제, 연간 손익 통산). "
+             "금융소득 종합과세(연 2,000만원 초과)는 모델링하지 않고 해당 연도만 표시합니다."
+    )
+    preset = BacktestConfig.TAX_PRESETS[tax_preset]
     with st.sidebar.expander("⚙️ Tax Configuration", expanded=False):
         tax_config = {
             'qualified_dividend_rate': st.number_input(
                 "Qualified Dividend Tax Rate (%)",
                 min_value=0.0,
                 max_value=50.0,
-                value=BacktestConfig.DEFAULT_QUALIFIED_DIVIDEND_TAX * 100,
+                value=preset['qualified_dividend_rate'] * 100,
                 step=0.5,
-                help="Tax rate for qualified dividends (held > 60 days)"
+                help="Tax rate for qualified dividends (KR: US withholding 15%)"
             ) / 100,
             'ordinary_dividend_rate': st.number_input(
                 "Ordinary Dividend Tax Rate (%)",
                 min_value=0.0,
                 max_value=50.0,
-                value=BacktestConfig.DEFAULT_ORDINARY_DIVIDEND_TAX * 100,
+                value=preset['ordinary_dividend_rate'] * 100,
                 step=0.5,
                 help="Tax rate for ordinary dividends"
             ) / 100,
             'long_term_capital_gains_rate': st.number_input(
-                "Long-term Capital Gains Tax Rate (%)",
+                "Capital Gains Tax Rate (%)",
                 min_value=0.0,
                 max_value=50.0,
-                value=BacktestConfig.DEFAULT_LONG_TERM_CAPITAL_GAINS_TAX * 100,
+                value=preset['long_term_capital_gains_rate'] * 100,
                 step=0.5,
-                help="Tax rate for assets held > 1 year"
+                help="KR: 22% on annual net gains above the deduction; US: long-term rate"
             ) / 100
         }
+        if preset.get('annual_cg_deduction_krw'):
+            tax_config['annual_cg_deduction_krw'] = st.number_input(
+                "Annual Capital Gains Deduction (KRW)",
+                min_value=0,
+                max_value=100_000_000,
+                value=int(preset['annual_cg_deduction_krw']),
+                step=500_000,
+            )
+
+show_krw = st.sidebar.checkbox(
+    "Show KRW view (원화 환산)",
+    value=True,
+    help="USD/KRW 환율을 반영한 원화 기준 평가액·수익률과 연도별 배당소득(원화) 표시"
+)
 
 st.sidebar.divider()
 
@@ -296,6 +321,7 @@ if run_backtest:
 
             # Store results in session state
             st.session_state['backtest_results'] = results
+            st.session_state['backtest_krw'] = backtester.krw_summary(results) if show_krw else None
             st.session_state['backtest_params'] = {
                 'stocks': selected_stocks,
                 'weights': weights,
@@ -323,6 +349,47 @@ if 'backtest_results' in st.session_state:
     metrics = results['metrics']
 
     st.header("📈 Performance Summary")
+    st.warning(
+        "⚠️ **결과 해석 주의 — 생존편향**: 종목을 *오늘의* 스크리너·배당귀족 목록에서 골랐다면, "
+        "그 사이 배당을 삭감·중단해 목록에서 빠진 종목(예: 2020년 WBA, T)이 백테스트에 없습니다. "
+        "과거 수익률이 실제로 그 시점에 같은 기준으로 골랐을 때보다 높게 나오는 경향이 있습니다. "
+        "또한 과거 성과는 미래 수익을 보장하지 않습니다."
+    )
+    if 'risk_free_rate' in metrics:
+        st.caption(
+            f"Sharpe/Sortino 무위험수익률: {metrics['risk_free_rate']:.2%} "
+            f"({metrics.get('risk_free_source', '')}). 가격은 배당 미조정 종가 + 실제 배당금 반영."
+        )
+
+    krw = st.session_state.get('backtest_krw')
+    if krw and krw.get('available'):
+        st.subheader("🇰🇷 원화 기준 (KRW view)")
+        k1, k2, k3, k4 = st.columns(4)
+        k1.metric("최종 평가액 (KRW)", f"₩{krw['final_value_krw']:,.0f}")
+        k2.metric("환율 변화 (USD/KRW)", f"{krw['fx_end']:,.0f}",
+                  f"{krw['fx_change_pct']:+.1f}% (시작 {krw['fx_start']:,.0f})")
+        if 'total_return_krw_pct' in krw:
+            k3.metric("총수익률 (KRW)", f"{krw['total_return_krw_pct']:.1f}%")
+            k4.metric("CAGR (KRW)", f"{krw['cagr_krw_pct']:.2f}%")
+        else:
+            k3.caption("월 적립이 있어 원화 기준 총수익률·CAGR은 생략합니다 (적립 시점마다 환율이 다름).")
+        by_year = krw.get('dividends_krw_by_year')
+        if by_year is not None and len(by_year):
+            threshold = BacktestConfig.KR_FINANCIAL_INCOME_THRESHOLD_KRW
+            st.caption("연도별 세전 배당소득 (KRW)")
+            st.dataframe(
+                pd.DataFrame({
+                    '배당소득 (KRW)': by_year.map(lambda v: f"₩{v:,.0f}"),
+                    '종합과세 기준 초과': by_year.map(lambda v: '⚠️ 초과' if v > threshold else ''),
+                }),
+                width='stretch'
+            )
+            if krw['years_over_threshold']:
+                st.warning(
+                    f"⚠️ {', '.join(map(str, krw['years_over_threshold']))}년 배당소득이 금융소득 종합과세 기준 "
+                    f"(연 ₩{threshold:,.0f})을 넘습니다. 초과분은 다른 소득과 합산되어 최고 49.5% 누진세율이 적용될 수 "
+                    "있으며, 이 백테스트의 세금 계산에는 반영되지 않았습니다. 이자 등 다른 금융소득도 합산 대상입니다."
+                )
 
     # --- KEY METRICS (4 columns) ---
     col1, col2, col3, col4 = st.columns(4)

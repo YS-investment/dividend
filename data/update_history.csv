@@ -1,0 +1,2 @@
+started_at,finished_at,status,mode,raw_rows,final_rows,enrichment_failures,macro_source,treasury_10y_ma,cpi_annualized,error
+2026-11-18T04:42:16.067107+00:00,2026-11-18T04:44:45.278439+00:00,success,reprocess,5698,379,0,fetched,0.04333,0.04063,

@@ -16,6 +16,8 @@ from datetime import datetime
 import yfinance as yf
 import streamlit as st
 
+from config import BacktestConfig
+
 
 class PortfolioBacktester:
     """
@@ -54,6 +56,15 @@ class PortfolioBacktester:
         if not np.isclose(weight_sum, 1.0, atol=0.001):
             raise ValueError(f"Weights must sum to 1.0, got {weight_sum}")
 
+        # Risk-free rate (lazily fetched, see get_risk_free_rate)
+        self._rf = None
+        self._rf_source = None
+
+        # Korean capital-gains model state (see _calculate_capital_gains_tax)
+        self._current_date = None
+        self._fx: Optional[pd.Series] = None
+        self._cg_realized_by_year: Dict[int, float] = {}
+
         # Data storage
         self.historical_data: Dict[str, pd.DataFrame] = {}
         self.benchmark_data: Optional[pd.DataFrame] = None
@@ -71,7 +82,7 @@ class PortfolioBacktester:
         for symbol in self.stocks:
             try:
                 ticker = yf.Ticker(symbol)
-                hist = ticker.history(start=self.start_date, end=self.end_date)
+                hist = ticker.history(start=self.start_date, end=self.end_date, auto_adjust=False)
 
                 if hist.empty:
                     st.warning(f"No data available for {symbol}")
@@ -106,7 +117,7 @@ class PortfolioBacktester:
         """
         try:
             ticker = yf.Ticker(benchmark)
-            hist = ticker.history(start=self.start_date, end=self.end_date)
+            hist = ticker.history(start=self.start_date, end=self.end_date, auto_adjust=False)
 
             # Get dividend data
             dividends = ticker.dividends
@@ -134,7 +145,7 @@ class PortfolioBacktester:
         """
         try:
             ticker = yf.Ticker('SCHD')
-            hist = ticker.history(start=self.start_date, end=self.end_date)
+            hist = ticker.history(start=self.start_date, end=self.end_date, auto_adjust=False)
 
             # Get dividend data
             dividends = ticker.dividends
@@ -221,7 +232,9 @@ class PortfolioBacktester:
         last_rebalance_date = None
         rebalancing_history = []
 
+        self._cg_realized_by_year = {}
         for date in trading_days:
+            self._current_date = date
             # Monthly contribution (on first trading day of each month)
             current_month = date.tz_localize(None).to_period('M')
             if last_month is not None and current_month != last_month:
@@ -695,8 +708,9 @@ class PortfolioBacktester:
         annualized_return = returns.mean() * 252 * 100
 
         # Risk metrics
-        sharpe_ratio = self._calculate_sharpe_ratio(returns)
-        sortino_ratio = self._calculate_sortino_ratio(returns)
+        rf = self.get_risk_free_rate()
+        sharpe_ratio = self._calculate_sharpe_ratio(returns, rf)
+        sortino_ratio = self._calculate_sortino_ratio(returns, rf)
         max_drawdown = self._calculate_mdd(daily_values['Value'])
         calmar_ratio = cagr / abs(max_drawdown) if max_drawdown != 0 else 0
 
@@ -760,8 +774,27 @@ class PortfolioBacktester:
             'outperformance': outperformance,
             'win_rate': win_rate,
             'total_dividends': total_dividends,
-            'annual_dividend_income': annual_dividend_income
+            'annual_dividend_income': annual_dividend_income,
+            'risk_free_rate': rf,
+            'risk_free_source': self._rf_source
         }
+
+    def get_risk_free_rate(self) -> float:
+        """
+        Average 13-week T-bill yield (^IRX) over the backtest period, so
+        Sharpe/Sortino use the cash return actually available at the time.
+        Falls back to BacktestConfig.RISK_FREE_RATE if the fetch fails.
+        """
+        if getattr(self, '_rf', None) is not None:
+            return self._rf
+        try:
+            irx = yf.Ticker('^IRX').history(start=self.start_date, end=self.end_date)['Close'].dropna()
+            if irx.empty:
+                raise ValueError("no ^IRX data")
+            self._rf, self._rf_source = float(irx.mean()) / 100, '^IRX period average'
+        except Exception:
+            self._rf, self._rf_source = BacktestConfig.RISK_FREE_RATE, 'config fallback'
+        return self._rf
 
     def _calculate_mdd(self, values: pd.Series) -> float:
         """
@@ -999,6 +1032,12 @@ class PortfolioBacktester:
                     fee = abs(value_diff) * rebalancing_fee
                     new_holdings[symbol] += shares_to_trade
                     total_fees += fee
+                    if symbol in tax_lots:
+                        tax_lots[symbol].append({
+                            'date': self._current_date,
+                            'shares': shares_to_trade,
+                            'cost_basis': price
+                        })
 
                 else:
                     # Selling
@@ -1030,44 +1069,109 @@ class PortfolioBacktester:
         tax_config: Dict[str, float]
     ) -> float:
         """
-        Calculate capital gains tax using FIFO method.
+        Capital gains tax on a sale, FIFO. Sold shares are consumed from the
+        lots so the same gain is never taxed twice.
 
-        Args:
-            symbol: Stock symbol
-            shares_sold: Number of shares sold
-            sale_price: Sale price per share
-            tax_lots: List of tax lots for this symbol
-            tax_config: Tax configuration
-
-        Returns:
-            Total capital gains tax
+        US model (default): each lot's positive gain x long-term rate.
+        Korean model (tax_config has 'annual_cg_deduction_krw'): gains and
+        losses net within the calendar year; only cumulative net gain above
+        the annual deduction (converted to USD at the sale-date FX rate) is
+        taxed. The return value is the incremental tax for this sale - it can
+        be negative when a loss reduces tax already charged earlier that year.
         """
-        if not tax_lots:
+        if not tax_lots or shares_sold <= 0:
             return 0.0
 
-        total_tax = 0.0
+        rate = tax_config.get('long_term_capital_gains_rate', 0.15)
+        realized = 0.0          # net gain/loss of this sale
+        positive_gain = 0.0     # sum of positive lot gains (US model)
         shares_remaining = shares_sold
 
-        for lot in tax_lots:
-            if shares_remaining <= 0:
-                break
+        while shares_remaining > 1e-12 and tax_lots:
+            lot = tax_lots[0]
+            take = min(shares_remaining, lot['shares'])
+            gain = take * (sale_price - lot['cost_basis'])
+            realized += gain
+            positive_gain += max(gain, 0.0)
+            lot['shares'] -= take
+            shares_remaining -= take
+            if lot['shares'] <= 1e-12:
+                tax_lots.pop(0)
 
-            lot_shares = lot['shares']
-            lot_cost_basis = lot['cost_basis']
+        deduction_krw = tax_config.get('annual_cg_deduction_krw')
+        if not deduction_krw:
+            return positive_gain * rate
 
-            # Determine how many shares from this lot
-            shares_from_lot = min(shares_remaining, lot_shares)
+        year = self._current_date.year if self._current_date is not None else 0
+        fx = self._fx_rate(self._current_date)
+        deduction_usd = deduction_krw / fx if fx else 0.0
+        before = self._cg_realized_by_year.get(year, 0.0)
+        after = before + realized
+        self._cg_realized_by_year[year] = after
+        taxable_before = max(0.0, before - deduction_usd)
+        taxable_after = max(0.0, after - deduction_usd)
+        return (taxable_after - taxable_before) * rate
 
-            # Calculate gain/loss
-            proceeds = shares_from_lot * sale_price
-            cost = shares_from_lot * lot_cost_basis
-            capital_gain = proceeds - cost
+    def krw_summary(self, results: Dict) -> Dict:
+        """
+        Korean-investor view of a finished backtest: portfolio value in KRW,
+        KRW return/CAGR (lump sum only - contributions are converted at their
+        own dates and break a simple CAGR), and pre-tax dividend income per
+        calendar year in KRW flagged against the comprehensive financial income
+        taxation threshold.
+        """
+        self._fx_rate(None)  # ensure FX loaded
+        fx = self._fx
+        if fx is None or fx.empty:
+            return {'available': False}
 
-            if capital_gain > 0:
-                # Assume long-term if held > 365 days (simplified)
-                tax_rate = tax_config.get('long_term_capital_gains_rate', 0.15)
-                total_tax += capital_gain * tax_rate
+        values = results['daily_values']['Value'].copy()
+        values.index = pd.DatetimeIndex(values.index).tz_localize(None)
+        fx_aligned = fx.reindex(values.index, method='ffill').bfill()
+        values_krw = values * fx_aligned
 
-            shares_remaining -= shares_from_lot
+        fx_start, fx_end = float(fx_aligned.iloc[0]), float(fx_aligned.iloc[-1])
+        initial_krw = self.initial_investment * fx_start
+        years = (values.index[-1] - values.index[0]).days / 365.25
+        out = {
+            'available': True,
+            'fx_start': fx_start,
+            'fx_end': fx_end,
+            'fx_change_pct': (fx_end / fx_start - 1) * 100,
+            'final_value_krw': float(values_krw.iloc[-1]),
+            'values_krw': values_krw,
+        }
+        if self.monthly_contribution == 0 and years > 0:
+            out['total_return_krw_pct'] = (values_krw.iloc[-1] / initial_krw - 1) * 100
+            out['cagr_krw_pct'] = ((values_krw.iloc[-1] / initial_krw) ** (1 / years) - 1) * 100
 
-        return total_tax
+        div = results.get('dividend_history')
+        threshold = BacktestConfig.KR_FINANCIAL_INCOME_THRESHOLD_KRW
+        if div is not None and not div.empty:
+            d = div.copy()
+            d['Date'] = pd.DatetimeIndex(d['Date']).tz_localize(None)
+            d['fx'] = fx.reindex(d['Date'], method='ffill').bfill().values
+            d['KRW'] = d['Amount'] * d['fx']
+            by_year = d.groupby(d['Date'].dt.year)['KRW'].sum()
+            out['dividends_krw_by_year'] = by_year
+            out['years_over_threshold'] = [int(y) for y, v in by_year.items() if v > threshold]
+        else:
+            out['dividends_krw_by_year'] = pd.Series(dtype=float)
+            out['years_over_threshold'] = []
+        return out
+
+    def _fx_rate(self, date) -> Optional[float]:
+        """USD/KRW on or before date (loaded lazily from AppConfig FX ticker)."""
+        if self._fx is None:
+            try:
+                fx = yf.Ticker(BacktestConfig.FX_TICKER).history(
+                    start=self.start_date, end=self.end_date)['Close'].dropna()
+                fx.index = fx.index.tz_localize(None)
+                self._fx = fx
+            except Exception:
+                self._fx = pd.Series(dtype=float)
+        if self._fx.empty or date is None:
+            return None
+        d = pd.Timestamp(date).tz_localize(None) if pd.Timestamp(date).tzinfo else pd.Timestamp(date)
+        prior = self._fx[self._fx.index <= d]
+        return float(prior.iloc[-1]) if len(prior) else float(self._fx.iloc[0])

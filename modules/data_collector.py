@@ -38,7 +38,11 @@ class DividendDataCollector:
     def update_all_data(self, use_scraping: bool = True, progress_callback: Optional[Callable] = None) -> pd.DataFrame:
         """
         Main data update function
-        Complete workflow: scraping → validation → processing → enrichment → filtering
+        Complete workflow: scraping → validation → processing → enrichment → save
+
+        Every run is appended to data/update_history.csv. A failed run, or one
+        where more than 10% of symbols failed enrichment, sends a Telegram
+        alert when TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID are set.
 
         Args:
             use_scraping: If True, scrape new data. If False, process existing raw data.
@@ -47,11 +51,47 @@ class DividendDataCollector:
         Returns:
             Processed DataFrame
         """
+        from modules.update_log import record_update, notify
+
+        started = datetime.now(timezone.utc).isoformat()
+        self._run_info = {'mode': 'scrape' if use_scraping else 'reprocess'}
+        try:
+            final_df = self._run_update_pipeline(use_scraping, progress_callback)
+        except BaseException as e:
+            record_update(started_at=started, finished_at=datetime.now(timezone.utc).isoformat(),
+                          status='failed', error=f"{type(e).__name__}: {str(e)[:300]}", **self._run_info)
+            notify(f"❌ Dividend data update FAILED ({self._run_info['mode']})\n{type(e).__name__}: {str(e)[:500]}")
+            raise
+
+        n_fail = self._run_info.get('enrichment_failures', 0)
+        degraded = n_fail > 0.10 * max(len(final_df), 1)
+        record_update(started_at=started, finished_at=datetime.now(timezone.utc).isoformat(),
+                      status='degraded' if degraded else 'success', **self._run_info)
+        if degraded:
+            notify(f"⚠️ Dividend data update degraded: {n_fail} of {len(final_df)} symbols failed "
+                   f"enrichment (see data/enrichment_failures.csv)")
+        return final_df
+
+    def _run_update_pipeline(self, use_scraping: bool, progress_callback: Optional[Callable]) -> pd.DataFrame:
+        """Pipeline stages; update_all_data() wraps this with logging/alerts."""
         # Stage 0: Backup existing data
         print("=" * 60)
         print("STAGE 0: Backing up existing data...")
         print("=" * 60)
         self.backup_existing_data()
+
+        # Macro benchmarks (10Y Treasury MA, CPI) - the universe's 5Y CAGR
+        # floor depends on CPI, so refresh before Stage 2
+        from modules.macro_benchmarks import refresh_macro_benchmarks
+        macro = refresh_macro_benchmarks()
+        print(f"✓ Macro benchmarks ({macro.get('source')}): "
+              f"10Y {AppConfig.RATE_MA_YEARS}Y MA {macro['treasury_10y_ma']:.2%}, "
+              f"CPI {AppConfig.CPI_YEARS}Y {macro['cpi_annualized']:.2%}")
+        for err in macro.get('errors', []):
+            print(f"  ⚠ {err}")
+        self._run_info.update(macro_source=macro.get('source'),
+                              treasury_10y_ma=macro.get('treasury_10y_ma'),
+                              cpi_annualized=macro.get('cpi_annualized'))
 
         # Stage 1: Data Collection
         print("\n" + "=" * 60)
@@ -89,6 +129,8 @@ class DividendDataCollector:
 
             raw_df = pd.read_csv(raw_data_path)
             print(f"✓ Loaded existing raw data from {raw_data_path}")
+
+        self._run_info['raw_rows'] = len(raw_df)
 
         # Stage 2: Data Processing & Filtering
         print("\n" + "=" * 60)
@@ -128,12 +170,12 @@ class DividendDataCollector:
 
         enriched_df = self.enrich_with_yfinance(filtered_df)
 
-        # Stage 4: Second-Level Filtering
+        # Stage 4: Yield-vs-history columns (informational; no filtering)
         print("\n" + "=" * 60)
-        print("STAGE 4: Final Filtering")
+        print("STAGE 4: Yield Comparison Columns")
         print("=" * 60)
 
-        final_df = self.apply_yield_comparison_filter(enriched_df)
+        final_df = self.add_yield_comparison_columns(enriched_df)
 
         # Stage 5: Save Final Data
         print("\n" + "=" * 60)
@@ -144,6 +186,7 @@ class DividendDataCollector:
         final_df.to_csv(output_path, index=False)
         print(f"✓ Final data saved to {output_path}")
         print(f"✓ Total stocks in final dataset: {len(final_df)}")
+        self._run_info['final_rows'] = len(final_df)
 
         # Record the actual completion time (UTC), since file mtimes get
         # reset on every git checkout/redeploy and don't reflect this.
@@ -213,23 +256,23 @@ class DividendDataCollector:
         print(f"  Premium stocks (bypass filters): {len(premium_stocks)}")
         print(f"  Regular stocks (apply filters): {len(regular_stocks)}")
 
-        if 'Div. Yield' in regular_stocks.columns:
-            regular_stocks = regular_stocks[regular_stocks['Div. Yield'] >= AppConfig.DEFAULT_MIN_YIELD]
+        # Universe = loosest bar shared by both screeners. No payout gate here
+        # (sector unknown before yfinance; payout rules are sector-specific and
+        # applied in data_processor.filter_stocks()).
+        from modules.macro_benchmarks import load_macro_benchmarks
+        cpi_floor = load_macro_benchmarks()['cpi_annualized']
 
-        if 'Payout Ratio' in regular_stocks.columns:
-            regular_stocks = regular_stocks[
-                (regular_stocks['Payout Ratio'] >= AppConfig.DEFAULT_PAYOUT_MIN) &
-                (regular_stocks['Payout Ratio'] <= AppConfig.DEFAULT_PAYOUT_MAX)
-            ]
+        if 'Div. Yield' in regular_stocks.columns:
+            regular_stocks = regular_stocks[regular_stocks['Div. Yield'] >= AppConfig.UNIVERSE_MIN_YIELD]
 
         if 'Div. Gr. Years' in regular_stocks.columns:
-            regular_stocks = regular_stocks[regular_stocks['Div. Gr. Years'] >= AppConfig.DEFAULT_MIN_YEARS]
+            regular_stocks = regular_stocks[regular_stocks['Div. Gr. Years'] >= AppConfig.UNIVERSE_MIN_GROWTH_YEARS]
 
         if 'Div. Growth' in regular_stocks.columns:
-            regular_stocks = regular_stocks[regular_stocks['Div. Growth'] >= AppConfig.DEFAULT_MIN_GROWTH]
+            regular_stocks = regular_stocks[regular_stocks['Div. Growth'] >= AppConfig.UNIVERSE_MIN_GROWTH_1Y]
 
         if 'Div. Growth 5Y' in regular_stocks.columns:
-            regular_stocks = regular_stocks[regular_stocks['Div. Growth 5Y'] >= AppConfig.DEFAULT_MIN_GROWTH_5Y]
+            regular_stocks = regular_stocks[regular_stocks['Div. Growth 5Y'] >= cpi_floor]
 
         result = pd.concat([premium_stocks, regular_stocks], ignore_index=True)
 
@@ -809,6 +852,9 @@ class DividendDataCollector:
             # Concatenate all DataFrames
             if df_list:
                 final_df = pd.concat(df_list, ignore_index=True)
+                # StockAnalysis.com renamed 'Div. ($)' to 'Dividend' (Oct 2026);
+                # downstream code and final_df2.csv still use the old name.
+                final_df = final_df.rename(columns={'Dividend': 'Div. ($)'})
                 print(f"\n✓ Successfully scraped {len(final_df)} stocks from {len(df_list)} pages")
                 sys.stdout.flush()
                 return final_df
@@ -914,7 +960,12 @@ class DividendDataCollector:
 
     def enrich_with_yfinance(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Enrich filtered stocks with Yahoo Finance data
+        Enrich each symbol with yfinance metrics via
+        modules.dividend_metrics.compute_ticker_metrics (sector, leverage,
+        multi-year coverage/growth, dividend history, yield bands, buybacks).
+
+        Runs AppConfig.YFINANCE_MAX_WORKERS threads. Per-symbol failures are
+        written to data/enrichment_failures.csv; failed metrics stay NaN.
 
         Args:
             df: DataFrame with Symbol column
@@ -922,261 +973,90 @@ class DividendDataCollector:
         Returns:
             DataFrame with additional YF columns
         """
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from modules.dividend_metrics import compute_ticker_metrics
+
         print("\nEnriching data with Yahoo Finance metrics...")
         result = df.copy()
+        failures = []  # (symbol, stage, reason)
+        metrics_by_symbol = {}
 
-        # Track enrichment failures for diagnostics
-        failures = []  # list of (symbol, stage, reason)
-
-        # Initialize new columns
-        yf_columns = [
-            'fiveYearAvgDivdendYield',
-            'Trainling_5Y_avg_dividend_yield',
-            'Trainling_5Y_min_dividend_yield',
-            'Trainling_5Y_max_dividend_yield',
-            'Trainling_10Y_avg_dividend_yield',
-            'Trainling_10Y_min_dividend_yield',
-            'Trainling_10Y_max_dividend_yield',
-            'Sector',
-            'Industry',
-            'FCF_Dividend_Ratio',
-            'Debt_to_Equity',
-            'ROE',
-            'EPS_Growth',
-            'Revenue_Growth',
-            'Trailing_EPS'
-        ]
-        for col in yf_columns:
-            if col in ('Sector', 'Industry'):
-                result[col] = ''
-            elif col in ['FCF_Dividend_Ratio', 'Debt_to_Equity', 'ROE', 'EPS_Growth', 'Revenue_Growth', 'Trailing_EPS']:
-                result[col] = np.nan
-            else:
-                # Initialize bands and fiveYearAvg with NaN to distinguish from 0
-                result[col] = np.nan
-
-        # Process each ticker
-        for ticker_symbol in tqdm(result['Symbol'], desc="Fetching Yahoo Finance data"):
+        def _one(symbol):
             try:
-                # yfinance uses hyphens for class shares (e.g. BF-B),
-                # while StockAnalysis uses dots (BF.B).
-                # Convert only for yfinance calls; keep Symbol column as-is.
-                yf_symbol = ticker_symbol.replace('.', '-')
-                ticker_obj = yf.Ticker(yf_symbol)
-
-                # Get 5-year average from info
-                try:
-                    avg_yield = ticker_obj.info.get('fiveYearAvgDividendYield', 0)
-                    if avg_yield:
-                        result.loc[result['Symbol'] == ticker_symbol, 'fiveYearAvgDivdendYield'] = round(avg_yield / 100, 4)
-                except Exception as e:
-                    failures.append((ticker_symbol, 'fiveYearAvg', str(e)[:100]))
-                try:
-                    result.loc[result['Symbol'] == ticker_symbol, 'Sector'] = ticker_obj.info.get('sector', '')
-                    result.loc[result['Symbol'] == ticker_symbol, 'Industry'] = ticker_obj.info.get('industry', '')
-                except Exception as e:
-                    failures.append((ticker_symbol, 'sector_industry', str(e)[:100]))
-
-                # Get financial metrics (FCF/Dividend Ratio, Debt-to-Equity, ROE)
-                try:
-                    # FCF/Dividend Ratio — try cashflow statement first (stable),
-                    # fall back to info API (volatile day-to-day).
-                    fcf_ratio = None
-
-                    # Method 1: Cash flow statement (preferred — higher coverage)
-                    try:
-                        cf = ticker_obj.cashflow
-                        if cf is not None and not cf.empty:
-                            fcf_val = None
-                            if 'Free Cash Flow' in cf.index:
-                                s = cf.loc['Free Cash Flow'].dropna()
-                                if len(s):
-                                    fcf_val = float(s.iloc[0])
-                            div_paid = None
-                            for key in ('Cash Dividends Paid', 'Common Stock Dividend Paid', 'Dividends Paid'):
-                                if key in cf.index:
-                                    v = cf.loc[key].dropna()
-                                    if len(v):
-                                        div_paid = abs(float(v.iloc[0]))
-                                        break
-                            if fcf_val is not None and div_paid and div_paid > 0:
-                                fcf_ratio = round(fcf_val / div_paid, 2)
-                    except Exception:
-                        pass
-
-                    # Method 2: info API (fallback)
-                    if fcf_ratio is None:
-                        fcf = ticker_obj.info.get('freeCashflow', 0)
-                        shares = ticker_obj.info.get('sharesOutstanding', 0)
-                        div_rate = ticker_obj.info.get('dividendRate', 0)
-                        if fcf != 0 and shares > 0 and div_rate > 0:
-                            fcf_ratio = round(fcf / (shares * div_rate), 2)
-
-                    if fcf_ratio is not None:
-                        result.loc[result['Symbol'] == ticker_symbol, 'FCF_Dividend_Ratio'] = fcf_ratio
-
-                    # Debt-to-Equity Ratio
-                    debt_to_equity = ticker_obj.info.get('debtToEquity', 0)
-                    if debt_to_equity:
-                        result.loc[result['Symbol'] == ticker_symbol, 'Debt_to_Equity'] = round(debt_to_equity, 2)
-
-                    # Return on Equity
-                    roe = ticker_obj.info.get('returnOnEquity', 0)
-                    if roe:
-                        # ROE comes as decimal (e.g., 0.15 for 15%), convert to percentage
-                        result.loc[result['Symbol'] == ticker_symbol, 'ROE'] = round(roe * 100, 2)
-
-                    # Trailing YoY earnings growth (decimal, e.g. 0.15 for 15%) -
-                    # kept in the same decimal scale as Div. Growth / Div. Growth 5Y
-                    # so it can be compared directly against dividend growth rates.
-                    eps_growth = ticker_obj.info.get('earningsGrowth', 0)
-                    if eps_growth:
-                        result.loc[result['Symbol'] == ticker_symbol, 'EPS_Growth'] = round(eps_growth, 4)
-
-                    # Trailing YoY revenue growth (decimal) - same scale/pattern as
-                    # EPS_Growth. Used both as a scoring input and to gate out
-                    # stocks with a declining revenue base in filter_stocks().
-                    revenue_growth = ticker_obj.info.get('revenueGrowth', 0)
-                    if revenue_growth:
-                        result.loc[result['Symbol'] == ticker_symbol, 'Revenue_Growth'] = round(revenue_growth, 4)
-
-                    # Trailing twelve-month EPS - a net-loss proxy used to gate out
-                    # currently unprofitable stocks in filter_stocks(). Checked with
-                    # `is not None` (not truthy) since a real $0.00 EPS is a valid
-                    # reading, not a "missing data" sentinel.
-                    trailing_eps = ticker_obj.info.get('trailingEps')
-                    if trailing_eps is not None:
-                        result.loc[result['Symbol'] == ticker_symbol, 'Trailing_EPS'] = round(trailing_eps, 4)
-                except Exception as e:
-                    failures.append((ticker_symbol, 'financial_metrics', str(e)[:100]))
-
-                # Calculate rolling metrics from 11-year history
-                try:
-                    hist_df = ticker_obj.history(period="11y")[['Close']]
-                    div_series = ticker_obj.dividends
-
-                    # Align timezone
-                    if div_series.index.tz is not None:
-                        div_series.index = div_series.index.tz_localize(None)
-                    if hist_df.index.tz is not None:
-                        hist_df.index = hist_df.index.tz_localize(None)
-
-                    if not hist_df.empty:
-                        # TTM (trailing 12 months) annual dividend — sum of actual
-                        # payments in rolling 365-day window. No Payout Freq. needed.
-                        ttm_annual = div_series.rolling('365D').sum()
-                        hist_df['Annual_Dividends'] = ttm_annual.reindex(hist_df.index, method='ffill')
-                        hist_df['dividend_yield'] = hist_df['Annual_Dividends'] / hist_df['Close']
-                        hist_df = hist_df.dropna(subset=['dividend_yield'])
-
-                        # Time-based rolling windows with min_periods
-                        min_periods_5y = 756   # ~3 years minimum for 5Y window
-                        min_periods_10y = 1512 # ~6 years minimum for 10Y window
-
-                        hist_df['T5Y_avg'] = hist_df['dividend_yield'].rolling('1825D', min_periods=min_periods_5y).mean()
-                        hist_df['T5Y_min'] = hist_df['dividend_yield'].rolling('1825D', min_periods=min_periods_5y).min()
-                        hist_df['T5Y_max'] = hist_df['dividend_yield'].rolling('1825D', min_periods=min_periods_5y).max()
-                        hist_df['T10Y_avg'] = hist_df['dividend_yield'].rolling('3650D', min_periods=min_periods_10y).mean()
-                        hist_df['T10Y_min'] = hist_df['dividend_yield'].rolling('3650D', min_periods=min_periods_10y).min()
-                        hist_df['T10Y_max'] = hist_df['dividend_yield'].rolling('3650D', min_periods=min_periods_10y).max()
-
-                        # Get latest values
-                        if len(hist_df) > 0:
-                            for band_col, src_col in [
-                                ('Trainling_5Y_avg_dividend_yield', 'T5Y_avg'),
-                                ('Trainling_5Y_min_dividend_yield', 'T5Y_min'),
-                                ('Trainling_5Y_max_dividend_yield', 'T5Y_max'),
-                                ('Trainling_10Y_avg_dividend_yield', 'T10Y_avg'),
-                                ('Trainling_10Y_min_dividend_yield', 'T10Y_min'),
-                                ('Trainling_10Y_max_dividend_yield', 'T10Y_max'),
-                            ]:
-                                val = hist_df[src_col].iloc[-1]
-                                if not pd.isna(val):
-                                    result.loc[result['Symbol'] == ticker_symbol, band_col] = val
-                                # Keep as NaN if missing
-
-                except Exception as e:
-                    failures.append((ticker_symbol, 'rolling_metrics', str(e)[:100]))
-
+                return symbol, compute_ticker_metrics(symbol), None
             except Exception as e:
-                failures.append((ticker_symbol, 'ticker_init', str(e)[:100]))
-                continue
+                return symbol, None, str(e)[:100]
 
-        # Report enrichment failures
+        symbols = result['Symbol'].astype(str).tolist()
+        with ThreadPoolExecutor(max_workers=AppConfig.YFINANCE_MAX_WORKERS) as ex:
+            futures = [ex.submit(_one, s) for s in symbols]
+            for fut in tqdm(as_completed(futures), total=len(futures), desc="Fetching Yahoo Finance data"):
+                symbol, metrics, err = fut.result()
+                if err:
+                    failures.append((symbol, 'ticker_init', err))
+                    continue
+                for stage, msg in metrics.pop('_errors', []):
+                    failures.append((symbol, stage, msg))
+                metrics_by_symbol[symbol] = metrics
+
+        # Second pass: retry symbols that failed outright, sequentially and
+        # slowly (failures are usually Yahoo throttling under parallel load)
+        def _throttled(stage, msg):
+            return stage == 'ticker_init' or 'Rate limited' in msg or 'Too Many Requests' in msg
+
+        retry = sorted({s for s, stage, msg in failures if _throttled(stage, msg)})
+        if retry:
+            print(f"  Retrying {len(retry)} failed/throttled symbols sequentially...")
+            failures = [f for f in failures if f[0] not in retry]
+            for s in retry:
+                time.sleep(2)
+                symbol, metrics, err = _one(s)
+                if err:
+                    failures.append((symbol, 'ticker_init', err))
+                    continue
+                for stage, msg in metrics.pop('_errors', []):
+                    failures.append((symbol, stage, msg))
+                metrics_by_symbol[symbol] = metrics
+
+        metrics_df = pd.DataFrame.from_dict(metrics_by_symbol, orient='index')
+        metrics_df.index.name = 'Symbol'
+        metrics_df = metrics_df.reset_index()
+
+        # Replace any stale enrichment columns from a previous run
+        overlap = [c for c in metrics_df.columns if c != 'Symbol' and c in result.columns]
+        result = result.drop(columns=overlap).merge(metrics_df, on='Symbol', how='left')
+        result['Sector'] = result['Sector'].fillna('')
+        result['Industry'] = result['Industry'].fillna('')
+
+        if hasattr(self, '_run_info'):
+            self._run_info['enrichment_failures'] = len({f[0] for f in failures})
+        fail_path = os.path.join(self.data_dir, 'enrichment_failures.csv')
         if failures:
             fail_df = pd.DataFrame(failures, columns=['Symbol', 'stage', 'reason'])
-            fail_path = os.path.join(self.data_dir, 'enrichment_failures.csv')
             fail_df.to_csv(fail_path, index=False)
-            stage_counts = fail_df['stage'].value_counts().to_dict()
-            print(f"⚠ Enrichment failures: {len(failures)} total — {stage_counts}")
+            print(f"⚠ Enrichment failures: {len(failures)} total — {fail_df['stage'].value_counts().to_dict()}")
             print(f"  Saved to {fail_path}")
         else:
-            print(f"✓ Enrichment complete — no failures")
+            if os.path.exists(fail_path):
+                os.remove(fail_path)
+            print("✓ Enrichment complete — no failures")
 
-        print(f"✓ Enrichment complete")
         return result
 
-    def apply_yield_comparison_filter(self, df: pd.DataFrame) -> pd.DataFrame:
+    def add_yield_comparison_columns(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Apply second-level filtering: current yield > historical avg
-        Premium stocks (Aristocrats/Kings/SCHD) bypass this filter
-
-        Args:
-            df: DataFrame with Yahoo Finance enrichment
-
-        Returns:
-            Filtered DataFrame
+        Informational yield-vs-history columns (no filtering). Current TTM
+        yield and the bands share one source (yfinance, raw prices), so the
+        comparison is like-for-like. Valuation itself is judged by
+        Yield_Pctl_5Y in data_processor.add_valuation_signal().
         """
         result = df.copy()
-
-        # Ensure numeric types for yield columns
-        result['fiveYearAvgDivdendYield'] = pd.to_numeric(result['fiveYearAvgDivdendYield'], errors='coerce')
-        result['Trainling_5Y_avg_dividend_yield'] = pd.to_numeric(result['Trainling_5Y_avg_dividend_yield'], errors='coerce')
-        result['Trainling_10Y_avg_dividend_yield'] = pd.to_numeric(result['Trainling_10Y_avg_dividend_yield'], errors='coerce')
-
-        # 5Y comparison: prefer info's fiveYearAvg, fall back to our rolling 5Y avg
-        def _calc_5y_diff(row):
-            avg = row['fiveYearAvgDivdendYield']
-            if pd.isna(avg) or avg <= 0:
-                avg = row.get('Trainling_5Y_avg_dividend_yield', 0)
-            if pd.isna(avg) or avg <= 0:
-                return np.nan  # Cannot compare -> NaN (bypass filter)
-            return (row['Div. Yield'] - avg) / avg
-
-        def _calc_10y_diff(row):
-            avg = row.get('Trainling_10Y_avg_dividend_yield', 0)
-            if pd.isna(avg) or avg <= 0:
-                return np.nan
-            return (row['Div. Yield'] - avg) / avg
-
-        result['Five_y_DividendYield_diff'] = result.apply(_calc_5y_diff, axis=1)
-        result['Ten_y_DividendYield_diff'] = result.apply(_calc_10y_diff, axis=1)
-
-        if 'Category' in result.columns:
-            premium_mask = result['Category'] != 'Others'
-            premium_stocks = result[premium_mask].copy()
-            regular_stocks = result[~premium_mask].copy()
-
-            regular_stocks = regular_stocks[
-                (regular_stocks['Five_y_DividendYield_diff'] >= 0) |
-                (regular_stocks['Ten_y_DividendYield_diff'] >= 0) |
-                # Bypass filter if both bands are missing
-                (regular_stocks['Five_y_DividendYield_diff'].isna() &
-                 regular_stocks['Ten_y_DividendYield_diff'].isna())
-            ]
-
-            result = pd.concat([premium_stocks, regular_stocks], ignore_index=True)
-            print(f"✓ Premium stocks (bypass yield filter): {len(premium_stocks)}")
-            print(f"✓ Regular stocks (after yield filter): {len(regular_stocks)}")
-        else:
-            result = result[
-                (result['Five_y_DividendYield_diff'] >= 0) |
-                (result['Ten_y_DividendYield_diff'] >= 0) |
-                (result['Five_y_DividendYield_diff'].isna() &
-                 result['Ten_y_DividendYield_diff'].isna())
-            ]
-
-        print(f"✓ Applied yield comparison filter: {len(result)} stocks remaining")
+        for p in ('5Y', '10Y'):
+            avg = pd.to_numeric(result.get(f'Trainling_{p}_avg_dividend_yield'), errors='coerce')
+            cur = pd.to_numeric(result.get('Yield_TTM'), errors='coerce')
+            col = 'Five_y_DividendYield_diff' if p == '5Y' else 'Ten_y_DividendYield_diff'
+            result[col] = ((cur - avg) / avg).where(avg > 0).round(4)
+        print(f"✓ Added yield comparison columns: {len(result)} stocks")
         return result
 
 
