@@ -217,6 +217,17 @@ class AppConfig:
     TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
     TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
+    # ===== Korean stocks (docs/kr_design.md) - collection stage only for now =====
+    KR_UNIVERSE_MIN_MARCAP_KRW = 100_000_000_000   # 1,000억 market cap
+    KR_UNIVERSE_MIN_AMOUNT20_KRW = 500_000_000     # 5억 20-day average traded value
+    # DART reports to pull: business-report years for 배당사항 (each covers 3 years),
+    # full financials (each covers 2 years) and treasury stock (1 year each)
+    KR_DART_ALOT_YEARS = (2017, 2020, 2023, 2025)
+    KR_DART_FIN_YEARS = (2023, 2025)
+    KR_DART_TREASURY_YEARS = (2023, 2024, 2025)
+    KR_DART_RATE_S = 1.0                           # seconds between DART calls (limit 20,000/day)
+    KR_KIS_DIVIDEND_SINCE = "20020101"             # KIS 예탁원 배당일정 history start
+
 
 @dataclass
 class BacktestConfig:

@@ -3,3 +3,7 @@ logs/
 # Local Claude settings and personal holdings (dividend-consultant skill)
 .claude/settings.local.json
 holdings.csv
+
+# Secrets and Korean data (local only — KRX/DART raw data must not be published)
+.env
+data/kr/
