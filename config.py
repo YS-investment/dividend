@@ -92,6 +92,11 @@ class AppConfig:
     # by min(StockAnalysis 5Y, peak-based 5Y) and cut detection applies.
     CUT_CHECK_STREAK_YEARS = 10
     CUT_DETECT_THRESHOLD = 0.10        # >10% drop counts as a cut
+    # Suspension: no regular payment for SUSPEND_GAP_INTERVALS payment intervals
+    # (+ grace days for date jitter), e.g. quarterly -> 151 days. Also used to
+    # stop carrying a stopped dividend forward in Yield_TTM.
+    SUSPEND_GAP_INTERVALS = 1.5
+    SUSPEND_GAP_GRACE_DAYS = 15
 
     # Sector-specific cutoffs. Group is assigned by data_processor.sector_group().
     #   max_nd_ebitda / min_int_cov: None = not applicable (gate skipped)

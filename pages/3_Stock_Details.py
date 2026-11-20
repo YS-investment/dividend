@@ -137,7 +137,9 @@ for row_start in range(0, len(HEALTH_METRICS), 5):
             st.metric(label, _fmt(stock_data.get(key), kind), help=help_text)
 
 flags = []
-if bool(stock_data.get('Cut_Flag')):
+if bool(stock_data.get('Div_Suspended')):
+    flags.append(f"⛔ 배당 중단 의심 — 마지막 정기 배당 {stock_data.get('Div_Last_Pay_Date') or '?'} 이후 지급 없음")
+elif bool(stock_data.get('Cut_Flag')):
     last_cut = stock_data.get('Div_Last_Cut_Year')
     flags.append(f"⚠️ 최근 10년 내 배당 삭감 감지 ({int(last_cut) if pd.notna(last_cut) else '?'}년)")
 for key in ('Yield_Trap', 'EPS_Alert'):

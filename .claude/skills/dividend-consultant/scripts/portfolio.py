@@ -17,7 +17,7 @@ from modules.portfolio_diagnosis import diagnose_portfolio
 
 HOLD_COLS = ['Symbol', 'Company Name', 'Sector_Label', 'Shares', 'Price', 'Value', 'Value_Share',
              'Annual_Income', 'Income_Share', 'Yield_On_Price', 'Div_CAGR_5Y_Adj', 'Safety_Grade', 'Valuation',
-             'Yield_Pctl_5Y', 'Timing_Signal', 'Cut_Flag', 'Yield_Trap', 'Crisis_Passed', 'Growth_Badge',
+             'Yield_Pctl_5Y', 'Timing_Signal', 'Cut_Flag', 'Div_Suspended', 'Yield_Trap', 'Crisis_Passed', 'Growth_Badge',
              'Category', 'Action', 'Hold_Action', 'Action_Reasons']
 # Same action label read from the holder's side
 HOLD_LABEL = {'교체 검토': '교체 검토', '관찰': '보유·관찰', '관망': '보유 (추가매수 보류)',

@@ -22,7 +22,7 @@ FIELDS = {
                'Net_Debt_EBITDA', 'Interest_Coverage', 'EPS_CV'],
     'fundamentals': ['Trailing_EPS', 'ROE', 'Revenue_CAGR_3Y', 'EPS_CAGR_3Y', 'Revenue_Decline_Years',
                      'Growth_Badge', 'EPS_Alert', 'P_FCF'],
-    'cut_crisis': ['Cut_Flag', 'Div_Cut_Detected', 'Div_Last_Cut_Year', 'Crisis_Passed', 'Crisis_Count'],
+    'cut_crisis': ['Cut_Flag', 'Div_Suspended', 'Div_Last_Pay_Date', 'Div_Cut_Detected', 'Div_Last_Cut_Year', 'Crisis_Passed', 'Crisis_Count'],
     'valuation': ['Valuation', 'Yield_Trap', 'Yield_TTM', 'Yield_Pctl_5Y', 'Trainling_5Y_avg_dividend_yield',
                   'Trainling_5Y_min_dividend_yield', 'Trainling_5Y_max_dividend_yield',
                   'Trainling_10Y_avg_dividend_yield'],

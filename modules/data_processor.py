@@ -69,7 +69,10 @@ def add_adjusted_dividend_metrics(df: pd.DataFrame) -> pd.DataFrame:
       streak >= CUT_CHECK_STREAK_YEARS -> StockAnalysis 5Y CAGR as-is (no cut possible)
       otherwise -> min(StockAnalysis 5Y, peak-based 5Y from yfinance)
     Cut_Flag: cut detected by both yfinance methods AND streak below the
-      check threshold (a long streak proves the detection was a false positive).
+      check threshold (a long streak proves the detection was a false positive),
+      OR the dividend is suspended (Div_Suspended - no payment for ~1.5
+      intervals). The streak can't clear a suspension: StockAnalysis keeps
+      the old streak until the next annual update.
     """
     result = df.copy()
     streak = _col(result, 'Div. Gr. Years')
@@ -82,8 +85,17 @@ def add_adjusted_dividend_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
     detected = result['Div_Cut_Detected'].fillna(False).astype(bool) \
         if 'Div_Cut_Detected' in result.columns else pd.Series(False, index=result.index)
-    result['Cut_Flag'] = detected & ~long_streak
+    result['Div_Suspended'] = _bool_col(result, 'Div_Suspended')
+    result['Cut_Flag'] = (detected & ~long_streak) | result['Div_Suspended']
     return result
+
+
+def _bool_col(df: pd.DataFrame, name: str) -> pd.Series:
+    """Boolean column with missing/unknown -> False (CSV round-trips give strings)."""
+    if name not in df.columns:
+        return pd.Series(False, index=df.index)
+    s = df[name]
+    return s.map(lambda v: v is True or str(v).strip().lower() in ('true', '1', '1.0')).astype(bool)
 
 
 def add_div_coverage(df: pd.DataFrame) -> pd.DataFrame:
@@ -322,7 +334,8 @@ def filter_stocks(
     Pass/fail gates. Missing data (NaN) passes as "unknown" except where noted.
 
     Dividend gates: yield, consecutive growth/payment years, 1Y growth,
-      adjusted 5Y CAGR (Div_CAGR_5Y_Adj), optional Chowder Rule.
+      adjusted 5Y CAGR (Div_CAGR_5Y_Adj), optional Chowder Rule; a suspended
+      dividend (Div_Suspended) always fails - its yield is a stale number.
     Sector-aware gates (AppConfig.SECTOR_RULES by Sector_Group):
       payout   - slider range, a sector cap, or exempt (REIT/MLP)
       leverage - Net_Debt_EBITDA <= max_nd_ebitda; Interest_Coverage >= min_int_cov
@@ -347,6 +360,7 @@ def filter_stocks(
     keep &= _col(f, 'Div. Years') >= min_div_years
     keep &= _col(f, 'Div. Growth') >= min_growth
     keep &= _col(f, 'Div_CAGR_5Y_Adj') >= min_growth_5y
+    keep &= ~_bool_col(f, 'Div_Suspended')
 
     if apply_chowder:
         f = add_chowder_number(f)

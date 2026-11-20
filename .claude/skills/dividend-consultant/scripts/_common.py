@@ -114,11 +114,12 @@ GATE_COLS = {
     'Div. Growth': '1년 배당성장률', 'Div_CAGR_5Y_Adj': '보정 5년 CAGR', 'Payout Ratio': '배당성향',
     'Net_Debt_EBITDA': '순부채/EBITDA', 'Interest_Coverage': '이자보상배율', 'Div_Coverage': '배당 커버리지',
     'Trailing_EPS': 'EPS(적자)', 'ROE': 'ROE', 'Revenue_Decline_Years': '매출 연속 감소',
+    'Div_Suspended': '배당 중단',
 }
 # Neutral value per gate column when another gate is under test: dividend
 # floors (>=) fail on NaN, so they get a value that always clears them
 _NEUTRAL = {'Div. Yield': 1e9, 'Div. Gr. Years': 1e9, 'Div. Years': 1e9, 'Div. Growth': 1e9,
-            'Div_CAGR_5Y_Adj': 1e9}
+            'Div_CAGR_5Y_Adj': 1e9, 'Div_Suspended': False}
 
 
 def gate_report(row: pd.Series, track: str, large_cap: bool = False) -> dict:
@@ -171,7 +172,9 @@ def action(row) -> dict:
         return {'label': '보유 (ETF)', 'reasons': ['분산 상품 — 등급 미산정']}
     if g in ('D', 'F'):
         reasons.append(f'안전성 {g}')
-    if _true(row.get('Cut_Flag')):
+    if _true(row.get('Div_Suspended')):
+        reasons.append(f"배당 중단 (마지막 지급 {row.get('Div_Last_Pay_Date') or '?'})")
+    elif _true(row.get('Cut_Flag')):
         reasons.append('최근 배당 삭감 이력')
     if str(row.get('Yield_Trap') or ''):
         reasons.append('수익률 함정 의심')

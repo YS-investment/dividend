@@ -115,7 +115,10 @@ def diagnose_portfolio(holdings: Dict[str, float], universe: pd.DataFrame,
     # Forward annual dividend per share: StockAnalysis 'Div. ($)', else yfinance dividendRate
     fwd = pd.to_numeric(pos.get('Div. ($)'), errors='coerce')
     fwd = fwd.where(fwd > 0, pos['Symbol'].map(lambda s: snapshots[s]['div_rate']))
-    pos['Annual_Div_Per_Share'] = fwd
+    # A suspended dividend pays nothing going forward, whatever 'Div. ($)' still says
+    suspended = pos['Div_Suspended'].fillna(False).astype(bool) if 'Div_Suspended' in pos.columns \
+        else pd.Series(False, index=pos.index)
+    pos['Annual_Div_Per_Share'] = fwd.where(~suspended, 0.0)
     pos['Value'] = pos['Shares'] * pos['Price']
     pos['Annual_Income'] = pos['Shares'] * pos['Annual_Div_Per_Share']
     pos['Yield_On_Price'] = pos['Annual_Income'] / pos['Value']
@@ -127,7 +130,9 @@ def diagnose_portfolio(holdings: Dict[str, float], universe: pd.DataFrame,
 
     # Monthly calendar: last 12 months of ex-dates scaled to current shares
     monthly = pd.Series(0.0, index=range(1, 13))
-    for _, p in pos.iterrows():
+    for i, p in pos.iterrows():
+        if suspended[i]:
+            continue
         pays = snapshots[p['Symbol']]['payments']
         for dt, amt in pays.items():
             monthly[dt.month] += amt * p['Shares']
@@ -159,7 +164,9 @@ def diagnose_portfolio(holdings: Dict[str, float], universe: pd.DataFrame,
     if weak > AppConfig.PORTFOLIO_MAX_WEAK_GRADE_INCOME_SHARE:
         flags.append(f"안전성 취약: D/F/N/A 등급이 배당소득의 {weak:.0%} "
                      f"(기준 {AppConfig.PORTFOLIO_MAX_WEAK_GRADE_INCOME_SHARE:.0%})")
-    for _, p in pos[pos['Cut_Flag'].fillna(False).astype(bool)].iterrows():
+    for _, p in pos[suspended].iterrows():
+        flags.append(f"배당 중단: {p['Symbol']} (마지막 정기 배당 {p.get('Div_Last_Pay_Date') or '?'}, 예상 소득 0으로 계산)")
+    for _, p in pos[pos['Cut_Flag'].fillna(False).astype(bool) & ~suspended].iterrows():
         flags.append(f"최근 10년 배당 삭감 이력: {p['Symbol']}")
     for _, p in pos[pos['Yield_Trap'].fillna('') != ''].iterrows():
         flags.append(f"수익률 함정 의심: {p['Symbol']} (배당률 역사적 상단 + 펀더멘털 약화)")
@@ -190,7 +197,7 @@ def diagnose_portfolio(holdings: Dict[str, float], universe: pd.DataFrame,
 
     cols = ['Symbol', 'Company Name', 'Sector_Label', 'Sector_Group', 'Shares', 'Price', 'Value', 'Value_Share',
             'Annual_Div_Per_Share', 'Annual_Income', 'Income_Share', 'Yield_On_Price', 'Div_CAGR_5Y_Adj',
-            'Safety_Grade', 'Valuation', 'Yield_Pctl_5Y', 'Timing_Signal', 'Cut_Flag', 'Yield_Trap',
+            'Safety_Grade', 'Valuation', 'Yield_Pctl_5Y', 'Timing_Signal', 'Cut_Flag', 'Div_Suspended', 'Div_Last_Pay_Date', 'Yield_Trap',
             'Crisis_Passed', 'Growth_Badge', 'Category']
     holdings_df = pos[[c for c in cols if c in pos.columns]].sort_values('Annual_Income', ascending=False)
     return {'holdings': holdings_df, 'monthly': monthly_df, 'sectors': sectors.reset_index(),

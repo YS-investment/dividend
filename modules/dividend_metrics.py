@@ -73,7 +73,8 @@ def dividend_history_metrics(div: pd.Series, as_of: pd.Timestamp) -> dict:
     cross-checks against the StockAnalysis growth streak.
     """
     out = {'Div_Cut_Detected': False, 'Div_Last_Cut_Year': NAN,
-           'Div_CAGR_5Y_Peak': NAN, 'Div_Special_Count': 0}
+           'Div_CAGR_5Y_Peak': NAN, 'Div_Special_Count': 0,
+           'Div_Suspended': False, 'Div_Last_Pay_Date': ''}
     if div is None or len(div) < 4:
         return out
 
@@ -86,6 +87,14 @@ def dividend_history_metrics(div: pd.Series, as_of: pd.Timestamp) -> dict:
     # f = typical regular payments per year (median of last 5 complete years,
     # so a partial current year or one missing yfinance record doesn't skew it)
     f = payments_per_year(reg, as_of)
+
+    # Suspension: the cut methods compare payments that happened, so a
+    # dividend that simply stops never registers as a drop. Flag it when no
+    # regular payment arrived for ~1.5 payment intervals.
+    if len(reg):
+        last_pay = reg.index.max()
+        out['Div_Last_Pay_Date'] = last_pay.strftime('%Y-%m-%d')
+        out['Div_Suspended'] = bool((as_of - last_pay) > suspension_gap(f))
 
     # Method 1: payment vs the same slot one year earlier (shift f), so
     # uneven interim/final payers (semi-annual ADRs) don't read as cuts
@@ -131,6 +140,11 @@ def payments_per_year(reg: pd.Series, as_of: pd.Timestamp) -> int:
     return max(int(round(counts.median())), 1) if len(counts) else 4
 
 
+def suspension_gap(f: int) -> pd.Timedelta:
+    """Days without a regular payment after which the dividend counts as stopped."""
+    return pd.Timedelta(days=int(365 / f * AppConfig.SUSPEND_GAP_INTERVALS) + AppConfig.SUSPEND_GAP_GRACE_DAYS)
+
+
 def yield_band_metrics(close: pd.Series, div: pd.Series) -> dict:
     """
     Trailing yield on raw prices: current value, 5Y/10Y avg/min/max, 5Y percentile.
@@ -150,7 +164,7 @@ def yield_band_metrics(close: pd.Series, div: pd.Series) -> dict:
     annual = reg.rolling(f).sum().dropna()
     # A dividend that stopped should not be carried forward: drop the rate
     # once ~1.5 payment intervals pass without a new payment
-    stale_after = pd.Timedelta(days=int(365 / f * 1.5) + 15)
+    stale_after = suspension_gap(f)
     idx = annual.reindex(close.index, method='ffill')
     last_pay = pd.Series(annual.index, index=annual.index).reindex(close.index, method='ffill')
     idx[(close.index - last_pay) > stale_after] = 0.0
